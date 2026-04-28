@@ -1,10 +1,12 @@
-const CACHE_NAME = "gecko-care-v2";
+const CACHE_NAME = "gecko-care-v3";
 const APP_SHELL = [
     "/",
+    "/login",
     "/main",
     "/survey",
     "/manifest.webmanifest",
     "/static/style.css",
+    "/static/supabase_auth.js",
     "/static/icons/icon-192.png",
     "/static/icons/icon-512.png",
     "/static/offline.html",
@@ -39,7 +41,7 @@ self.addEventListener("fetch", (event) => {
     if (request.mode === "navigate") {
         event.respondWith(
             fetch(request).catch(async () => {
-                const cached = await caches.match(request);
+                const cached = await caches.match(request, { ignoreSearch: true });
                 return cached || caches.match("/static/offline.html");
             }),
         );
@@ -47,7 +49,7 @@ self.addEventListener("fetch", (event) => {
     }
 
     event.respondWith(
-        caches.match(request).then((cached) => {
+        caches.match(request, { ignoreSearch: true }).then((cached) => {
             if (cached) {
                 return cached;
             }

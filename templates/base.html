@@ -11,8 +11,8 @@
     <link rel="manifest" href="{{ manifest_url | default('/manifest.webmanifest') }}">
     <link rel="icon" href="{{ url_for('static', path='icons/icon-192.png') }}" sizes="192x192" type="image/png">
     <link rel="apple-touch-icon" href="{{ url_for('static', path='icons/icon-192.png') }}">
-    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}?v=20260427g">
-    <script src="{{ url_for('static', path='supabase_auth.js') }}?v=20260428a"></script>
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+    <script src="{{ url_for('static', path='supabase_auth.js') }}"></script>
 </head>
 <body
     class="{{ body_class | default('', true) }}"
