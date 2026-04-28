@@ -1,2 +1,7 @@
 .env
 __pycache__/
+.venv/
+*.pyc
+uvicorn.log
+uvicorn.err
+.DS_Store
