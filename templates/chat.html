@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% set body_class = "chat-page" %}
+
+{% block hero %}{% endblock %}
+
+{% block content %}
+<section class="chat-screen">
+    <header class="chat-screen__topbar">
+        <a class="chat-screen__back" href="{{ main_url }}" aria-label="뒤로 가기">&lt;-</a>
+        <h1 class="chat-screen__title">채팅</h1>
+    </header>
+
+    <div class="chat-screen__history" id="chat-history">
+        <div class="chat-stack" id="chat-stack">
+            {% for message in messages %}
+            <article class="chat-bubble {% if message.role == 'ai' %}is-ai{% else %}is-user{% endif %}">
+                <p>{{ message.text }}</p>
+            </article>
+            {% endfor %}
+        </div>
+    </div>
+
+    <form class="chat-screen__composer" id="chat-form" data-chat-api-url="{{ chat_api_url }}">
+        <input type="hidden" id="pet-name" name="pet_name" value="{{ pet_name }}">
+        <div class="chat-screen__input-row">
+            <input
+                class="chat-input"
+                id="message"
+                name="message"
+                type="text"
+                value="{{ current_message }}"
+                placeholder="메시지를 입력하세요"
+                autocomplete="off"
+            >
+            <button class="primary-btn chat-submit" type="submit">전송</button>
+        </div>
+        <p class="chat-status" id="chat-status" aria-live="polite"></p>
+    </form>
+</section>
+
+<script id="initial-messages-json" type="application/json">
+{{ messages | tojson }}
+</script>
+
+<script>
+(function () {
+    const initialMessagesElement = document.getElementById("initial-messages-json");
+    let initialMessages = [];
+
+    try {
+        initialMessages = JSON.parse(initialMessagesElement ? initialMessagesElement.textContent : "[]");
+    } catch (error) {
+        initialMessages = [];
+    }
+
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("message");
+    const petNameInput = document.getElementById("pet-name");
+    const chatStack = document.getElementById("chat-stack");
+    const chatHistory = document.getElementById("chat-history");
+    const chatStatus = document.getElementById("chat-status");
+
+    if (!form || !input || !petNameInput || !chatStack || !chatHistory || !chatStatus) {
+        return;
+    }
+
+    const submitButton = form.querySelector('button[type="submit"]');
+    const chatApiUrl = form.dataset.chatApiUrl;
+
+    if (!submitButton || !chatApiUrl) {
+        return;
+    }
+
+    let currentMessages = Array.isArray(initialMessages) ? initialMessages.slice() : [];
+
+    const escapeHtml = (value) => String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+
+    const renderMessages = (messages) => {
+        chatStack.innerHTML = messages
+            .map((message) => {
+                const roleClass = message.role === "ai" ? "is-ai" : "is-user";
+                return `
+                    <article class="chat-bubble ${roleClass}">
+                        <p>${escapeHtml(message.text)}</p>
+                    </article>
+                `;
+            })
+            .join("");
+
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+    };
+
+    const renderTypingBubble = () => {
+        chatStack.insertAdjacentHTML(
+            "beforeend",
+            `
+                <article class="chat-bubble is-ai is-typing" aria-label="AI is typing">
+                    <div class="typing-dots" aria-hidden="true">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </article>
+            `
+        );
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+    };
+
+    renderMessages(currentMessages);
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const message = input.value.trim();
+        if (!message) {
+            return;
+        }
+
+        submitButton.disabled = true;
+        input.disabled = true;
+        input.value = "";
+        currentMessages.push({ role: "user", text: message });
+        renderMessages(currentMessages);
+        renderTypingBubble();
+        chatStatus.textContent = "AI가 답변을 작성하는 중...";
+
+        try {
+            const token = localStorage.getItem("supabase_access_token");
+            const headers = {
+                "Content-Type": "application/json"
+            };
+
+            if (token) {
+                headers.Authorization = `Bearer ${token}`;
+            }
+
+            const response = await fetch(chatApiUrl, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    pet_name: petNameInput.value,
+                    message
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("채팅 응답을 불러오지 못했어요.");
+            }
+
+            const data = await response.json();
+            currentMessages = Array.isArray(data.messages) ? data.messages : currentMessages;
+            renderMessages(currentMessages);
+            chatStatus.textContent = "";
+        } catch (error) {
+            renderMessages(currentMessages);
+            chatStatus.textContent = error instanceof Error ? error.message : "문제가 발생했어요.";
+        } finally {
+            submitButton.disabled = false;
+            input.disabled = false;
+            input.focus();
+        }
+    });
+})();
+</script>
+{% endblock %}

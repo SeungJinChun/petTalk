@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block hero %}
+<section class="sub-hero">
+    <p class="eyebrow">saved records</p>
+    <h1>{{ pet_name }} 기록</h1>
+    <p class="hero-text">현재 서버 메모리에 저장된 체중, 급여, 환경, 이벤트 기록입니다.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="section-block">
+    <div class="section-title">
+        <p>Summary</p>
+        <h2>저장된 데이터 수</h2>
+    </div>
+    <div class="record-metrics">
+        <div class="record-metric">
+            <span>체중</span>
+            <strong>{{ history_summary.counts.weight_logs }}</strong>
+        </div>
+        <div class="record-metric">
+            <span>급여</span>
+            <strong>{{ history_summary.counts.feeding_logs }}</strong>
+        </div>
+        <div class="record-metric">
+            <span>환경</span>
+            <strong>{{ history_summary.counts.environment_readings }}</strong>
+        </div>
+        <div class="record-metric">
+            <span>이벤트</span>
+            <strong>{{ history_summary.counts.care_events }}</strong>
+        </div>
+    </div>
+    <div class="record-actions">
+        <a class="secondary-btn" href="{{ chat_url }}">채팅으로 기록 추가</a>
+        <a class="secondary-btn" href="{{ main_url }}">메인으로</a>
+    </div>
+</section>
+
+<section class="section-block">
+    <div class="section-title">
+        <p>Weight</p>
+        <h2>체중 로그</h2>
+    </div>
+    {% if history.weight_logs %}
+    <div class="record-list">
+        {% for item in history.weight_logs|reverse %}
+        <article class="record-row">
+            <div>
+                <strong>{{ item.weight_grams }}g</strong>
+                <p>{{ item.body_condition_note or "체형 메모 없음" }}</p>
+            </div>
+            <time>{{ item.measured_at }}</time>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">아직 체중 기록이 없습니다.</p>
+    {% endif %}
+</section>
+
+<section class="section-block">
+    <div class="section-title">
+        <p>Feeding</p>
+        <h2>급여 로그</h2>
+    </div>
+    {% if history.feeding_logs %}
+    <div class="record-list">
+        {% for item in history.feeding_logs|reverse %}
+        <article class="record-row">
+            <div>
+                <strong>{{ item.outcome.value }}</strong>
+                <p>{{ item.food_name or item.food_category.value }}{% if item.refusal_reason_note %} · {{ item.refusal_reason_note }}{% endif %}</p>
+            </div>
+            <time>{{ item.offered_at }}</time>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">아직 급여 기록이 없습니다.</p>
+    {% endif %}
+</section>
+
+<section class="section-block">
+    <div class="section-title">
+        <p>Environment</p>
+        <h2>환경 기록</h2>
+    </div>
+    {% if history.environment_readings %}
+    <div class="record-list">
+        {% for item in history.environment_readings|reverse %}
+        <article class="record-row">
+            <div>
+                <strong>
+                    {% if item.temperature_c is not none %}{{ item.temperature_c }}°C{% else %}온도 없음{% endif %}
+                    ·
+                    {% if item.humidity_percent is not none %}{{ item.humidity_percent }}%{% else %}습도 없음{% endif %}
+                </strong>
+                <p>{{ item.sensor_device_name or "수동/채팅 기록" }}</p>
+            </div>
+            <time>{{ item.measured_at }}</time>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">아직 환경 기록이 없습니다.</p>
+    {% endif %}
+
+    {% if history.environment_daily_summaries %}
+    <div class="record-subsection">
+        <h3>일별 요약</h3>
+        <div class="record-list">
+            {% for item in history.environment_daily_summaries|reverse %}
+            <article class="record-row">
+                <div>
+                    <strong>{{ item.summary_date }}</strong>
+                    <p>
+                        온도 {{ item.temp_min_c or "-" }}~{{ item.temp_max_c or "-" }}°C ·
+                        습도 {{ item.humidity_min_percent or "-" }}~{{ item.humidity_max_percent or "-" }}%
+                    </p>
+                </div>
+                <span>{{ item.reading_count }}개</span>
+            </article>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</section>
+
+<section class="section-block">
+    <div class="section-title">
+        <p>Events</p>
+        <h2>중요 이벤트</h2>
+    </div>
+    {% if history.care_events %}
+    <div class="record-list">
+        {% for item in history.care_events|reverse %}
+        <article class="record-row">
+            <div>
+                <strong>{{ item.title or item.event_type.value }}</strong>
+                <p>{{ item.note or "메모 없음" }}</p>
+            </div>
+            <time>{{ item.occurred_at }}</time>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">아직 중요 이벤트가 없습니다.</p>
+    {% endif %}
+</section>
+{% endblock %}

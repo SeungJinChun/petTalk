@@ -1,0 +1,24 @@
+{
+  "name": "Crested Gecko Care",
+  "short_name": "Gecko Care",
+  "description": "Track your crested gecko's daily care, chats, and health notes.",
+  "start_url": "/main",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e8",
+  "theme_color": "#da7b2e",
+  "lang": "ko",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

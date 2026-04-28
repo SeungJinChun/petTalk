@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% set body_class = "main-dashboard-page" %}
+
+{% block hero %}{% endblock %}
+
+{% block content %}
+<section class="mobile-dashboard">
+    <div class="mobile-dashboard__topbar">
+        <div>
+            <p class="mobile-dashboard__date">{{ today_label }}</p>
+            <h1 class="mobile-dashboard__title">{{ pet_name }} · 크레스티드 게코</h1>
+        </div>
+        <a class="mobile-dashboard__icon-button" href="{{ pet_url }}" aria-label="프로필 보기">
+            <span></span>
+            <span></span>
+            <span></span>
+        </a>
+    </div>
+
+    <div class="mobile-dashboard__hero">
+        <div>
+            <p class="mobile-dashboard__eyebrow">오늘의 케어</p>
+            <h2>{{ pet_name }}</h2>
+        </div>
+        <span class="mobile-dashboard__hero-chip">전체 기록 {{ record_count }}개</span>
+    </div>
+
+    <article class="dashboard-card dashboard-card--summary">
+        <div class="dashboard-card__header">
+            <div class="dashboard-card__icon dashboard-card__icon--mint"></div>
+            <div>
+                <p class="dashboard-card__label">{{ overview_title }}</p>
+                <h3>{{ overview_text }}</h3>
+            </div>
+        </div>
+        <div class="dashboard-card__footer">
+            <span class="dashboard-chip">채우는 중</span>
+            <span class="dashboard-card__meta">{{ overview_badge }}</span>
+        </div>
+    </article>
+
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>케어 보고서</h3>
+            <span>분석 확인</span>
+        </div>
+        <a class="care-report-link" href="{{ report_url }}">보고서 보기</a>
+    </section>
+
+    {% if latest_card %}
+    <article class="dashboard-card">
+        <div class="dashboard-card__split">
+            <div>
+                <p class="dashboard-card__label">최근 메모</p>
+                <h3>{{ latest_card.title }}</h3>
+                <p class="dashboard-card__body">{{ latest_card.detail }}</p>
+            </div>
+            <span class="dashboard-card__meta">{{ latest_card.meta }}</span>
+        </div>
+    </article>
+    {% endif %}
+
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>온도 / 상태</h3>
+            <span>실시간</span>
+        </div>
+        <div class="dashboard-stat-grid">
+            {% for item in quick_stats %}
+            <article class="dashboard-stat dashboard-stat--{{ item.tone }}">
+                <p>{{ item.label }}</p>
+                <strong>{{ item.value }}</strong>
+                <span>{{ item.note }}</span>
+            </article>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>다음에 확인하면 좋은 것</h3>
+            <span>{{ next_topic_label }}</span>
+        </div>
+        <div class="dashboard-task-list">
+            {% for item in dashboard_tasks %}
+            <div class="dashboard-task-row">
+                <div class="dashboard-task-row__bullet"></div>
+                <p>{{ item.label }}</p>
+                <span>{{ item.status }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <nav class="dashboard-tabs" aria-label="주요 이동">
+        <a class="dashboard-tabs__item is-active" href="{{ main_url }}">체크인</a>
+        <a class="dashboard-tabs__item" href="{{ records_url }}">기록</a>
+        <a class="dashboard-tabs__item" href="{{ chat_url }}">노트</a>
+    </nav>
+
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>기록</h3>
+            <span>자동 생성</span>
+        </div>
+        <div class="dashboard-feed">
+            {% if activity_feed %}
+                {% for item in activity_feed %}
+                <article class="dashboard-feed__item dashboard-feed__item--{{ item.tone }}">
+                    <div class="dashboard-feed__marker"></div>
+                    <div class="dashboard-feed__copy">
+                        <p class="dashboard-feed__category">{{ item.category }}</p>
+                        <h4>{{ item.title }}</h4>
+                        <p>{{ item.detail }}</p>
+                    </div>
+                    <span class="dashboard-feed__meta">{{ item.meta }}</span>
+                </article>
+                {% endfor %}
+            {% else %}
+            <article class="dashboard-feed__empty">
+                <p>아직 쌓인 기록이 많지 않아요. 채팅에서 급여나 체중 이야기를 남기면 여기에 모입니다.</p>
+            </article>
+            {% endif %}
+        </div>
+    </section>
+
+    <section class="dashboard-card dashboard-card--profile">
+        <div class="dashboard-profile">
+            <img
+                class="dashboard-profile__image"
+                src="{{ url_for('static', path='icons/icon-192.png') }}"
+                alt=""
+            >
+            <div>
+                <p class="dashboard-card__label">프로필</p>
+                <h3>{{ pet_name }}</h3>
+                <p class="dashboard-profile__subtitle">크레스티드 게코</p>
+            </div>
+        </div>
+        <div class="dashboard-profile__notes">
+            {% for line in profile_lines %}
+            <p>{{ line }}</p>
+            {% endfor %}
+        </div>
+    </section>
+</section>
+
+<div class="floating-chat-cta">
+    <a class="floating-chat-cta__button" href="{{ chat_url }}">채팅으로 가기</a>
+</div>
+    <section class="account-delete-section">
+        <button
+            id="delete-account-button"
+            class="account-delete-button"
+            type="button"
+            data-delete-url="/api/account/delete"
+        >
+            계정 탈퇴
+        </button>
+    </section>
+
+<script>
+    (() => {
+        const button = document.getElementById("delete-account-button");
+        if (!button) return;
+
+        button.addEventListener("click", async () => {
+            const confirmed = window.confirm("정말 탈퇴할까요? 계정과 데이터가 모두 삭제돼요.");
+            if (!confirmed) return;
+
+            button.disabled = true;
+            const originalText = button.textContent;
+            button.textContent = "삭제 중...";
+
+            try {
+                const response = await fetch(button.dataset.deleteUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error(`failed: ${response.status}`);
+                }
+                const payload = await response.json();
+                if (payload && payload.auth_deleted === false) {
+                    const reason = payload.auth_delete_reason || "unknown";
+                    throw new Error(`auth-delete-failed:${reason}`);
+                }
+
+                if (window.auth && typeof window.auth.logout === "function") {
+                    window.auth.logout();
+                    return;
+                }
+
+                localStorage.removeItem("supabase_access_token");
+                location.href = "/login";
+            } catch (error) {
+                const message = String(error && error.message ? error.message : "");
+                if (message.startsWith("auth-delete-failed:")) {
+                    alert("인증 계정 삭제에 실패했어요. 서버에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요해요.");
+                } else {
+                    alert("탈퇴 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.");
+                }
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
+    })();
+</script>
+{% endblock %}

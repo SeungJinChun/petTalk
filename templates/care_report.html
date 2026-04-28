@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% set body_class = "care-report-page" %}
+
+{% block hero %}
+<section class="sub-hero">
+    <p class="eyebrow">케어 보고서</p>
+    <h1>{{ pet_name }} 상태 보고서</h1>
+    <p class="hero-text">현재 환경, 상태 분석 결과, 권장 조치를 확인할 수 있어요.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="section-block report-header">
+    <div class="report-header__title">
+        <h2>{{ report.headline }}</h2>
+        <span class="care-level-badge care-level-badge--{{ report.overall_level }}">{{ report.overall_label }}</span>
+    </div>
+    <p>{{ report.situation_summary }}</p>
+    <p>{{ report.status_summary }}</p>
+    <p class="report-generated-at">생성 시각: {{ report.generated_at }}</p>
+</section>
+
+<section class="section-block report-grid">
+    <article class="report-card">
+        <h3>환경 스냅샷</h3>
+        <div class="report-metric-grid">
+            <div>
+                <p>온도</p>
+                <strong>{{ report.environment_snapshot.temperature }}</strong>
+            </div>
+            <div>
+                <p>습도</p>
+                <strong>{{ report.environment_snapshot.humidity }}</strong>
+            </div>
+            <div>
+                <p>마지막 측정</p>
+                <strong>{{ report.environment_snapshot.measured_at }}</strong>
+            </div>
+        </div>
+        <p>{{ report.environment_summary }}</p>
+        <div class="report-chip-row">
+            {% if report.environment_snapshot.alerts %}
+                {% for item in report.environment_snapshot.alerts %}
+                <span class="report-chip">{{ item }}</span>
+                {% endfor %}
+            {% else %}
+                <span class="report-chip">최근 경보 없음</span>
+            {% endif %}
+        </div>
+    </article>
+
+    <article class="report-card">
+        <h3>룰 기반 신호</h3>
+        <div class="care-signal-list">
+            {% for signal in report.rule_signals %}
+            <article class="care-signal care-signal--{{ signal.level }}">
+                <div class="care-signal__top">
+                    <h4>{{ signal.area }}</h4>
+                    <span>{{ signal.level_label }}</span>
+                </div>
+                <p>{{ signal.summary }}</p>
+            </article>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="section-block report-grid">
+    <article class="report-card">
+        <h3>즉시 조치</h3>
+        <div class="care-action-list">
+            {% for item in report.immediate_actions %}
+            <p>{{ item }}</p>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="report-card">
+        <h3>향후 24시간 체크</h3>
+        <div class="care-action-list">
+            {% for item in report.next_24h_actions %}
+            <p>{{ item }}</p>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="section-block report-card">
+    <h3>에스컬레이션 가이드</h3>
+    <p>{{ report.when_to_escalate }}</p>
+</section>
+
+<nav class="section-block report-nav" aria-label="report actions">
+    <a class="secondary-btn" href="{{ main_url }}">메인으로 돌아가기</a>
+    <a class="secondary-btn" href="{{ records_url }}">기록 보기</a>
+    <a class="primary-btn" href="{{ chat_url }}">채팅 열기</a>
+</nav>
+{% endblock %}
