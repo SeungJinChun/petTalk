@@ -43,7 +43,8 @@
             <h3>케어 보고서</h3>
             <span>분석 확인</span>
         </div>
-        <a class="care-report-link" href="{{ report_url }}">보고서 보기</a>
+        <a id="care-report-link" class="care-report-link" href="{{ report_url }}">보고서 보기</a>
+        <p id="care-report-loading" class="dashboard-card__body" hidden>보고서로 이동 중...</p>
         <button
             id="alert-test-button"
             class="secondary-btn"
@@ -227,6 +228,8 @@
     const overviewText = document.getElementById("overview-text");
     const overviewBadge = document.getElementById("overview-badge");
     const quickStatsGrid = document.getElementById("quick-stats-grid");
+    const careReportLink = document.getElementById("care-report-link");
+    const careReportLoading = document.getElementById("care-report-loading");
     const alertTestButton = document.getElementById("alert-test-button");
     const RISK_LAST_KEY_STORAGE = "risk_notification_last_key";
     const RISK_LAST_AT_STORAGE = "risk_notification_last_at";
@@ -440,6 +443,14 @@
                 alertTestButton.disabled = false;
                 alertTestButton.textContent = original;
             }
+        });
+    }
+
+    if (careReportLink && careReportLoading) {
+        careReportLink.addEventListener("click", () => {
+            careReportLoading.hidden = false;
+            careReportLink.style.pointerEvents = "none";
+            careReportLink.textContent = "보고서 여는 중...";
         });
     }
 

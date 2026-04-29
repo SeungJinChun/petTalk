@@ -110,6 +110,7 @@ CARE_ANALYSIS_CACHE: dict[str, dict[str, Any]] = {}
 CARE_REPORT_CACHE: dict[str, dict[str, Any]] = {}
 CHAT_REPORT_PROMPT_STATE: dict[str, dict[str, Any]] = {}
 RISK_NOTIFICATION_INBOX: dict[str, dict[str, Any]] = {}
+RISK_NOTICE_CACHE: dict[str, dict[str, Any]] = {}
 RISK_ALERT_SAME_SIGNATURE_COOLDOWN = timedelta(hours=12)
 RISK_ALERT_LEVEL_COOLDOWN = {
     "alert": timedelta(hours=2),
@@ -120,6 +121,7 @@ RISK_ALERT_DAILY_CAP = {
     "watch": 2,
 }
 RISK_ALERT_MIN_INTERVAL = timedelta(minutes=20)
+KST = timezone(timedelta(hours=9))
 
 TOPIC_LABELS = {
     "identity": "기본 정보",
@@ -214,6 +216,9 @@ def clear_user_runtime_data(owner_user_id: str) -> None:
     for key in list(RISK_NOTIFICATION_INBOX.keys()):
         if key.startswith(f"{owner_user_id}::"):
             RISK_NOTIFICATION_INBOX.pop(key, None)
+    for key in list(RISK_NOTICE_CACHE.keys()):
+        if key.startswith(f"{owner_user_id}::"):
+            RISK_NOTICE_CACHE.pop(key, None)
     for session_key in list(CHAT_STORE.keys()):
         if session_key.startswith(f"chat_history::{owner_user_id}::"):
             CHAT_STORE.pop(session_key, None)
@@ -955,9 +960,16 @@ def history_summary(history: PetCareHistory, limit: int = 5) -> dict[str, Any]:
     }
 
 
+def to_kst(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(KST)
+
+
 def format_dashboard_date(moment: datetime) -> str:
     weekday_labels = ["월", "화", "수", "목", "금", "토", "일"]
-    return f"{moment.month}월 {moment.day}일 {weekday_labels[moment.weekday()]}요일"
+    local_moment = to_kst(moment)
+    return f"{local_moment.month}월 {local_moment.day}일 {weekday_labels[local_moment.weekday()]}요일"
 
 
 def topic_label(raw_topic: str | None) -> str:
@@ -1047,7 +1059,7 @@ def first_basic_onboarding_hint(profile: PetProfile) -> dict[str, str] | None:
 def format_timestamp_label(value: datetime | None) -> str:
     if value is None:
         return "방금 전"
-    return value.strftime("%m.%d %H:%M")
+    return to_kst(value).strftime("%m.%d %H:%M")
 
 
 def build_dashboard_tasks(profile: PetProfile) -> list[dict[str, str]]:
@@ -1146,7 +1158,7 @@ def build_environment_chart_points(history: PetCareHistory, limit: int = 24) -> 
             continue
         points.append(
             {
-                "label": item.measured_at.strftime("%m-%d %H:%M"),
+                "label": to_kst(item.measured_at).strftime("%m-%d %H:%M"),
                 "temperature": float(item.temperature_c) if item.temperature_c is not None else None,
                 "humidity": float(item.humidity_percent) if item.humidity_percent is not None else None,
             }
@@ -1514,7 +1526,7 @@ def build_environment_snapshot(profile: PetProfile, history: PetCareHistory) -> 
 
     measured_text = "최근 측정 시각 없음"
     if latest and latest.measured_at:
-        measured_text = latest.measured_at.strftime("%Y-%m-%d %H:%M")
+        measured_text = to_kst(latest.measured_at).strftime("%Y-%m-%d %H:%M")
 
     return {
         "temperature": temperature_text,
@@ -1637,7 +1649,7 @@ async def get_care_report(
         return cached.get("report", {})
 
     report = await generate_ai_care_report(profile, history, care_analysis)
-    report["generated_at"] = utc_now().strftime("%Y-%m-%d %H:%M")
+    report["generated_at"] = to_kst(utc_now()).strftime("%Y-%m-%d %H:%M")
     report["overall_level"] = care_analysis.get("overall_level", "stable")
     report["overall_label"] = care_analysis.get("overall_label", "안정")
     report["rule_signals"] = care_analysis.get("rule_signals", [])
@@ -1717,11 +1729,11 @@ def get_chat_report_prompt(
     }
 
     if level == "alert":
-        title = "경고 신호가 감지됐어요"
-        body = "최근 케어 지표에 즉시 확인이 필요한 항목이 있어요. 보고서에서 우선 조치를 확인해 주세요."
+        title = "지금 바로 확인이 필요해요"
+        body = "조금 위험한 신호가 보여요. 먼저 채팅에서 같이 정리하고, 바로 보고서로 이동하기."
     else:
-        title = "주의 신호가 있어요"
-        body = "최근 케어 지표가 흔들리고 있어요. 보고서에서 원인 후보와 권장 조치를 먼저 확인해 보세요."
+        title = "살짝 신경 쓰이는 흐름이 있어요"
+        body = "급한 건 아니지만 체크가 필요해요. 채팅으로 먼저 보고, 필요하면 보고서로 이동하기."
 
     return {
         "level": level,
@@ -1729,6 +1741,95 @@ def get_chat_report_prompt(
         "body": body,
         "signature": signature,
     }
+
+
+def fallback_ai_risk_notice(
+    report_prompt: dict[str, str],
+    care_analysis: dict[str, Any],
+) -> dict[str, str]:
+    summary = str(care_analysis.get("ai_summary") or "").strip()
+    title = str(report_prompt.get("title") or "확인이 필요한 신호가 있어요")
+    body = str(report_prompt.get("body") or "먼저 채팅에서 함께 확인하고, 필요하면 보고서로 이동해요.")
+    chat_message = (
+        f"{summary} 먼저 채팅에서 같이 확인해보고, 필요하면 보고서로 이동하기."
+        if summary
+        else "지금 상태 흐름에서 확인이 필요한 신호가 보여. 먼저 채팅에서 같이 보고, 필요하면 보고서로 이동하기."
+    )
+    return {
+        "title": title,
+        "notification_body": body,
+        "chat_message": chat_message,
+    }
+
+
+async def generate_ai_risk_notice(
+    profile: PetProfile,
+    history: PetCareHistory,
+    care_analysis: dict[str, Any],
+    report_prompt: dict[str, str],
+    pet_name: str,
+    owner_user_id: str,
+) -> dict[str, str]:
+    cache_key = profile_store_key(owner_user_id, profile.pet_id)
+    signature = f"{report_prompt.get('signature', 'risk')}::risk-notice::ko-v1"
+    cached = RISK_NOTICE_CACHE.get(cache_key)
+    if cached and cached.get("signature") == signature:
+        return cached.get("notice", fallback_ai_risk_notice(report_prompt, care_analysis))
+
+    fallback = fallback_ai_risk_notice(report_prompt, care_analysis)
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        return fallback
+
+    if not OPENAI_API_KEY:
+        return fallback
+
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    prompt = (
+        "너는 크레스티드 게코 케어 앱의 AI 도우미다.\n"
+        "사용자에게 보내는 위험 알림 문구를 자연스럽고 짧게 작성해라.\n"
+        "말투는 친구처럼 부드럽고 현실적인 톤으로, 과장/진단/공포 유발 금지.\n"
+        "기록 전체 맥락(급여, 체중, 환경, 이벤트)을 함께 고려해 문구를 만든다.\n"
+        "출력은 JSON만, 키는 title, notification_body, chat_message.\n"
+        "title은 18자 내외, notification_body는 70자 내외, chat_message는 140자 내외.\n"
+        "chat_message의 마지막은 '필요하면 보고서로 이동하기.'로 끝내라.\n"
+        f"pet_name={pet_name}\n"
+        f"profile={json.dumps(compact_profile_context(profile), ensure_ascii=False, default=str)}\n"
+        f"history={json.dumps(compact_history_context(history), ensure_ascii=False, default=str)}\n"
+        f"care_analysis={json.dumps(care_analysis, ensure_ascii=False, default=str)}\n"
+        f"default_title={report_prompt.get('title')}\n"
+        f"default_body={report_prompt.get('body')}"
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            messages=[{"role": "system", "content": prompt}],
+            model=REPLY_MODEL,
+            temperature=0.45,
+            max_completion_tokens=220,
+            response_format={"type": "json_object"},
+        )
+        payload = json.loads(completion.choices[0].message.content or "{}")
+        title = str(payload.get("title", "")).strip() or fallback["title"]
+        body = str(payload.get("notification_body", "")).strip() or fallback["notification_body"]
+        chat_message = str(payload.get("chat_message", "")).strip() or fallback["chat_message"]
+        if not chat_message.endswith("필요하면 보고서로 이동하기."):
+            chat_message = f"{chat_message.rstrip()} 필요하면 보고서로 이동하기."
+
+        notice = {
+            "title": title,
+            "notification_body": body,
+            "chat_message": chat_message,
+        }
+        RISK_NOTICE_CACHE[cache_key] = {
+            "signature": signature,
+            "notice": notice,
+            "updated_at": utc_now().isoformat(),
+        }
+        return notice
+    except Exception:
+        return fallback
 
 
 async def maybe_emit_risk_alert(
@@ -1760,13 +1861,15 @@ async def maybe_emit_risk_alert(
     if not messages:
         messages = get_initial_chat_messages(resolved_name)
 
-    ai_summary = str(care_analysis.get("ai_summary") or "").strip()
-    natural_notice = (
-        f"{report_prompt['title']} {ai_summary}"
-        if ai_summary
-        else "지금 상태 흐름에서 조금 신경 쓰이는 점이 보여. 채팅에서 같이 정리해보자."
+    ai_notice = await generate_ai_risk_notice(
+        profile,
+        history,
+        care_analysis,
+        report_prompt,
+        resolved_name,
+        owner_user_id,
     )
-    notice_text = f"{natural_notice} {chat_url}"
+    notice_text = ai_notice["chat_message"]
 
     notice_message = ChatMessage(
         message_id=str(uuid4()),
@@ -1784,8 +1887,8 @@ async def maybe_emit_risk_alert(
     risk_notification = {
         "key": f"{profile.pet_id}:{report_prompt.get('signature', care_analysis.get('overall_level', 'watch'))}",
         "level": report_prompt["level"],
-        "title": report_prompt["title"],
-        "body": report_prompt["body"],
+        "title": ai_notice["title"],
+        "body": ai_notice["notification_body"],
         "chat_url": chat_url,
     }
 
@@ -1799,8 +1902,8 @@ async def maybe_emit_risk_alert(
     if send_push:
         user = get_or_create_user(owner_user_id)
         push_payload = {
-            "title": report_prompt["title"],
-            "body": report_prompt["body"],
+            "title": ai_notice["title"],
+            "body": ai_notice["notification_body"],
             "url": chat_url,
             "tag": risk_notification["key"],
         }
@@ -3282,7 +3385,6 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
     collected_sections = [key for key in summary.keys() if key not in {"pet_id", "species"}]
     recent_feed = build_activity_feed(care_history)
     latest_environment = care_history.environment_readings[-1] if care_history.environment_readings else None
-    current_weight = collected_value(profile, "weight.current_weight_grams")
     day_temperature = collected_value(profile, "habitat.day_temperature_c")
     day_humidity = collected_value(profile, "habitat.day_humidity_percent")
     next_topic = topic_label(profile.coverage.next_best_question_topic)
@@ -3324,12 +3426,6 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "tone": "mint",
         },
         {
-            "label": "현재 체중",
-            "value": f"{current_weight}g" if current_weight is not None else "미입력",
-            "note": "최근 체중 로그 또는 프로필 값",
-            "tone": "peach",
-        },
-        {
             "label": "온도 / 습도",
             "value": environment_value,
             "note": environment_note,
@@ -3348,7 +3444,7 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "active_page": "main",
             "pet_name": resolved_name,
             "pet_summary": overview_text,
-            "today_label": format_dashboard_date(datetime.now()),
+            "today_label": format_dashboard_date(utc_now()),
             "overview_title": "오늘 상태 요약",
             "overview_text": overview_text,
             "overview_badge": "실시간",
@@ -3397,7 +3493,6 @@ async def main_data_api(request: Request, pet_name: str | None = None) -> JSONRe
     summary = profile_summary(profile)
     collected_sections = [key for key in summary.keys() if key not in {"pet_id", "species"}]
     latest_environment = care_history.environment_readings[-1] if care_history.environment_readings else None
-    current_weight = collected_value(profile, "weight.current_weight_grams")
     day_temperature = collected_value(profile, "habitat.day_temperature_c")
     day_humidity = collected_value(profile, "habitat.day_humidity_percent")
     next_topic = topic_label(profile.coverage.next_best_question_topic)
@@ -3437,12 +3532,6 @@ async def main_data_api(request: Request, pet_name: str | None = None) -> JSONRe
             "value": str(len(collected_sections)),
             "note": f"전체 프로필 기준 / 다음 {next_topic}",
             "tone": "mint",
-        },
-        {
-            "label": "현재 체중",
-            "value": f"{current_weight}g" if current_weight is not None else "미입력",
-            "note": "최근 체중 로그 또는 프로필 값",
-            "tone": "peach",
         },
         {
             "label": "온도 / 습도",
@@ -3506,7 +3595,7 @@ async def test_alert_api(request: Request, pet_name: str | None = None) -> JSONR
     chat_url = build_path("/chat", pet_name=resolved_name)
     key = f"{profile.pet_id}:test:{int(utc_now().timestamp())}"
 
-    notice_text = f"테스트 알림이 도착했어. 눌러서 채팅으로 이동해도 돼. {chat_url}"
+    notice_text = "테스트 알림이 도착했어. 먼저 채팅에서 확인하고, 필요하면 보고서로 이동하기."
     session_key = get_chat_session_key(resolved_name, current_user.user_id)
     messages = CHAT_STORE.get(session_key) or db_load_chat_history(current_user.user_id, session_key)
     if not messages:
@@ -3528,8 +3617,8 @@ async def test_alert_api(request: Request, pet_name: str | None = None) -> JSONR
     risk_notification = {
         "key": key,
         "level": "watch",
-        "title": "테스트 알림",
-        "body": "알림 동작 확인용 메시지예요. 채팅으로 이동해볼까요?",
+        "title": "테스트 알림이 도착했어요",
+        "body": "먼저 채팅에서 확인하고, 필요하면 보고서로 이동하기.",
         "chat_url": chat_url,
     }
     RISK_NOTIFICATION_INBOX[profile_store_key(current_user.user_id, profile.pet_id)] = {
@@ -3882,6 +3971,7 @@ async def sensor_environment_api(request: Request) -> JSONResponse:
             "device_id": payload.device_id,
             "reading_id": reading.reading_id,
             "measured_at": measured_at.isoformat(),
+            "measured_at_kst": to_kst(measured_at).isoformat(),
             "alerts": alerts,
             "risk_notification": risk_notification,
             "history_counts": history_summary(history)["counts"],
