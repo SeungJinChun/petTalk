@@ -12,9 +12,7 @@
             <h1 class="mobile-dashboard__title">{{ pet_name }} · 크레스티드 게코</h1>
         </div>
         <a class="mobile-dashboard__icon-button" href="{{ pet_url }}" aria-label="프로필 보기">
-            <span></span>
-            <span></span>
-            <span></span>
+            <span></span><span></span><span></span>
         </a>
     </div>
 
@@ -48,6 +46,23 @@
         <a class="care-report-link" href="{{ report_url }}">보고서 보기</a>
     </section>
 
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>센서 연동</h3>
+            <span>{% if sensor_linked %}연결됨{% else %}연결 필요{% endif %}</span>
+        </div>
+        <div class="sensor-link-box">
+            <p class="dashboard-card__body">
+                {% if sensor_linked %}
+                현재 연결: {{ sensor_device_name }} ({{ sensor_device_id }})
+                {% else %}
+                ESP32 센서를 등록하면 온습도 기록이 자동으로 쌓여요.
+                {% endif %}
+            </p>
+            <button id="sensor-link-open" class="secondary-btn" type="button">센서 추가</button>
+        </div>
+    </section>
+
     {% if latest_card %}
     <article class="dashboard-card">
         <div class="dashboard-card__split">
@@ -63,7 +78,7 @@
 
     <section class="dashboard-card">
         <div class="dashboard-section__heading">
-            <h3>온도 / 상태</h3>
+            <h3>온도 / 습도</h3>
             <span>실시간</span>
         </div>
         <div class="dashboard-stat-grid">
@@ -75,6 +90,24 @@
             </article>
             {% endfor %}
         </div>
+    </section>
+
+    <section class="dashboard-card">
+        <div class="dashboard-section__heading">
+            <h3>온습도 그래프</h3>
+            <span>최근 24개</span>
+        </div>
+        {% if environment_chart_points|length >= 2 %}
+        <div class="env-chart-wrap">
+            <canvas id="env-line-chart" class="env-line-chart" width="360" height="180"></canvas>
+            <div class="env-chart-legend">
+                <span><i class="env-dot env-dot--temp"></i> 온도(°C)</span>
+                <span><i class="env-dot env-dot--humid"></i> 습도(%)</span>
+            </div>
+        </div>
+        {% else %}
+        <p class="dashboard-card__body">그래프를 그리려면 환경 기록이 2개 이상 필요해요.</p>
+        {% endif %}
     </section>
 
     <section class="dashboard-card">
@@ -94,9 +127,9 @@
     </section>
 
     <nav class="dashboard-tabs" aria-label="주요 이동">
-        <a class="dashboard-tabs__item is-active" href="{{ main_url }}">체크인</a>
+        <a class="dashboard-tabs__item is-active" href="{{ main_url }}">체크업</a>
         <a class="dashboard-tabs__item" href="{{ records_url }}">기록</a>
-        <a class="dashboard-tabs__item" href="{{ chat_url }}">노트</a>
+        <a class="dashboard-tabs__item" href="{{ chat_url }}">채팅</a>
     </nav>
 
     <section class="dashboard-card">
@@ -119,7 +152,7 @@
                 {% endfor %}
             {% else %}
             <article class="dashboard-feed__empty">
-                <p>아직 쌓인 기록이 많지 않아요. 채팅에서 급여나 체중 이야기를 남기면 여기에 모입니다.</p>
+                <p>아직 쌓인 기록이 많지 않아요. 채팅에서 먹이, 체중, 환경 얘기를 하면 자동으로 정리돼요.</p>
             </article>
             {% endif %}
         </div>
@@ -127,11 +160,7 @@
 
     <section class="dashboard-card dashboard-card--profile">
         <div class="dashboard-profile">
-            <img
-                class="dashboard-profile__image"
-                src="{{ url_for('static', path='icons/icon-192.png') }}"
-                alt=""
-            >
+            <img class="dashboard-profile__image" src="{{ url_for('static', path='icons/icon-192.png') }}" alt="">
             <div>
                 <p class="dashboard-card__label">프로필</p>
                 <h3>{{ pet_name }}</h3>
@@ -149,65 +178,225 @@
 <div class="floating-chat-cta">
     <a class="floating-chat-cta__button" href="{{ chat_url }}">채팅으로 가기</a>
 </div>
-    <section class="account-delete-section">
-        <button
-            id="delete-account-button"
-            class="account-delete-button"
-            type="button"
-            data-delete-url="/api/account/delete"
-        >
-            계정 탈퇴
-        </button>
-    </section>
+
+<section class="account-delete-section">
+    <button id="delete-account-button" class="account-delete-button" type="button" data-delete-url="/api/account/delete">계정 탈퇴</button>
+</section>
+
+<div id="sensor-link-modal" class="sensor-modal" hidden>
+    <div class="sensor-modal__backdrop"></div>
+    <div class="sensor-modal__sheet" role="dialog" aria-modal="true" aria-labelledby="sensor-link-title">
+        <h3 id="sensor-link-title">센서 연동</h3>
+        <form id="sensor-link-form" class="sensor-link-form">
+            <label>
+                <span>디바이스 ID</span>
+                <input id="sensor-device-id" name="device_id" class="chat-input" type="text" placeholder="esp32_001" required>
+            </label>
+            <label>
+                <span>센서 이름(선택)</span>
+                <input id="sensor-device-name" name="sensor_device_name" class="chat-input" type="text" placeholder="테라리움 센서">
+            </label>
+            <label>
+                <span>위치 메모(선택)</span>
+                <input id="sensor-location-note" name="sensor_location_note" class="chat-input" type="text" placeholder="거실 선반">
+            </label>
+            <div class="sensor-link-form__actions">
+                <button id="sensor-link-cancel" class="secondary-btn" type="button">닫기</button>
+                <button id="sensor-link-submit" class="primary-btn" type="submit">연동 저장</button>
+            </div>
+        </form>
+        <pre id="sensor-link-result" class="sensor-link-result" hidden></pre>
+    </div>
+</div>
 
 <script>
-    (() => {
-        const button = document.getElementById("delete-account-button");
-        if (!button) return;
+(() => {
+    const points = {{ environment_chart_points | tojson }};
+    const canvas = document.getElementById("env-line-chart");
+    if (!canvas || !Array.isArray(points) || points.length < 2) return;
 
-        button.addEventListener("click", async () => {
-            const confirmed = window.confirm("정말 탈퇴할까요? 계정과 데이터가 모두 삭제돼요.");
-            if (!confirmed) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-            button.disabled = true;
-            const originalText = button.textContent;
-            button.textContent = "삭제 중...";
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 360;
+    const cssHeight = 180;
+    canvas.width = Math.floor(cssWidth * dpr);
+    canvas.height = Math.floor(cssHeight * dpr);
+    canvas.style.height = `${cssHeight}px`;
+    ctx.scale(dpr, dpr);
 
-            try {
-                const response = await fetch(button.dataset.deleteUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                });
+    const w = cssWidth;
+    const h = cssHeight;
+    const pad = { top: 14, right: 10, bottom: 24, left: 10 };
+    const innerW = w - pad.left - pad.right;
+    const innerH = h - pad.top - pad.bottom;
 
-                if (!response.ok) {
-                    throw new Error(`failed: ${response.status}`);
-                }
-                const payload = await response.json();
-                if (payload && payload.auth_deleted === false) {
-                    const reason = payload.auth_delete_reason || "unknown";
-                    throw new Error(`auth-delete-failed:${reason}`);
-                }
+    const temps = points.map((p) => p.temperature).filter((v) => Number.isFinite(v));
+    const humids = points.map((p) => p.humidity).filter((v) => Number.isFinite(v));
+    if (!temps.length && !humids.length) return;
 
-                if (window.auth && typeof window.auth.logout === "function") {
-                    window.auth.logout();
-                    return;
-                }
+    const tMin = temps.length ? Math.min(...temps) : 20;
+    const tMax = temps.length ? Math.max(...temps) : 30;
+    const hMin = humids.length ? Math.min(...humids) : 40;
+    const hMax = humids.length ? Math.max(...humids) : 90;
 
-                localStorage.removeItem("supabase_access_token");
-                location.href = "/login";
-            } catch (error) {
-                const message = String(error && error.message ? error.message : "");
-                if (message.startsWith("auth-delete-failed:")) {
-                    alert("인증 계정 삭제에 실패했어요. 서버에 SUPABASE_SERVICE_ROLE_KEY 설정이 필요해요.");
-                } else {
-                    alert("탈퇴 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.");
-                }
-                button.disabled = false;
-                button.textContent = originalText;
+    const yFromTemp = (v) => {
+        const min = Math.min(tMin, 20) - 1;
+        const max = Math.max(tMax, 30) + 1;
+        return pad.top + (1 - (v - min) / (max - min || 1)) * innerH;
+    };
+    const yFromHumid = (v) => {
+        const min = Math.min(hMin, 40) - 2;
+        const max = Math.max(hMax, 90) + 2;
+        return pad.top + (1 - (v - min) / (max - min || 1)) * innerH;
+    };
+    const xAt = (idx) => pad.left + (idx / (points.length - 1)) * innerW;
+
+    ctx.fillStyle = "#fffdfa";
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#eee4d8";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 3; i += 1) {
+        const y = pad.top + (i / 3) * innerH;
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+    }
+    ctx.stroke();
+
+    const drawLine = (key, yFn, color) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let moved = false;
+        points.forEach((p, i) => {
+            const v = p[key];
+            if (!Number.isFinite(v)) return;
+            const x = xAt(i);
+            const y = yFn(v);
+            if (!moved) {
+                ctx.moveTo(x, y);
+                moved = true;
+            } else {
+                ctx.lineTo(x, y);
             }
         });
-    })();
+        ctx.stroke();
+    };
+
+    drawLine("temperature", yFromTemp, "#e56f3a");
+    drawLine("humidity", yFromHumid, "#4d86d9");
+
+    ctx.fillStyle = "#9a8f80";
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(points[0]?.label || "", pad.left, h - 6);
+    ctx.textAlign = "right";
+    ctx.fillText(points[points.length - 1]?.label || "", w - pad.right, h - 6);
+})();
+</script>
+
+<script>
+(() => {
+    const button = document.getElementById("delete-account-button");
+    if (!button) return;
+
+    button.addEventListener("click", async () => {
+        if (!window.confirm("정말 탈퇴할까요? 계정과 데이터가 모두 삭제돼요.")) return;
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = "삭제 중...";
+
+        try {
+            const response = await fetch(button.dataset.deleteUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+            });
+            if (!response.ok) throw new Error(`failed: ${response.status}`);
+            const payload = await response.json();
+            if (payload && payload.auth_deleted === false) {
+                throw new Error(`auth-delete-failed:${payload.auth_delete_reason || "unknown"}`);
+            }
+
+            if (window.auth && typeof window.auth.logout === "function") {
+                window.auth.logout();
+                return;
+            }
+            localStorage.removeItem("supabase_access_token");
+            location.href = "/login";
+        } catch (error) {
+            const message = String(error && error.message ? error.message : "");
+            if (message.startsWith("auth-delete-failed:")) {
+                alert("인증 계정 삭제에 실패했어요. 서버의 SUPABASE_SERVICE_ROLE_KEY 설정을 확인해 주세요.");
+            } else {
+                alert("탈퇴 처리 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.");
+            }
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
+})();
+</script>
+
+<script>
+(() => {
+    const openButton = document.getElementById("sensor-link-open");
+    const modal = document.getElementById("sensor-link-modal");
+    const cancelButton = document.getElementById("sensor-link-cancel");
+    const form = document.getElementById("sensor-link-form");
+    const result = document.getElementById("sensor-link-result");
+    if (!openButton || !modal || !cancelButton || !form || !result) return;
+
+    const openModal = () => { modal.hidden = false; };
+    const closeModal = () => { modal.hidden = true; };
+    openButton.addEventListener("click", openModal);
+    cancelButton.addEventListener("click", closeModal);
+    modal.querySelector(".sensor-modal__backdrop")?.addEventListener("click", closeModal);
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitButton = document.getElementById("sensor-link-submit");
+        if (!(submitButton instanceof HTMLButtonElement)) return;
+        submitButton.disabled = true;
+        const originalText = submitButton.textContent;
+        submitButton.textContent = "저장 중...";
+        result.hidden = true;
+
+        const payload = {
+            device_id: (document.getElementById("sensor-device-id")?.value || "").trim(),
+            sensor_device_name: (document.getElementById("sensor-device-name")?.value || "").trim() || null,
+            sensor_location_note: (document.getElementById("sensor-location-note")?.value || "").trim() || null,
+            pet_name: "{{ pet_name }}",
+        };
+
+        try {
+            const response = await fetch("{{ sensor_link_api_url }}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok || !data.ok) throw new Error(data.reason || `failed:${response.status}`);
+
+            const lines = [
+                "연동 완료",
+                `POST ${location.origin}${data.endpoint_url}`,
+                "header: (none required)",
+                "",
+                `device_id: ${data.device_id}`,
+                'body example: {"device_id":"esp32_001","temperature_c":25.3,"humidity_percent":70.1}',
+            ];
+            result.textContent = lines.join("\n");
+            result.hidden = false;
+        } catch (error) {
+            result.textContent = `연동 실패: ${String(error && error.message ? error.message : error)}`;
+            result.hidden = false;
+        } finally {
+            submitButton.disabled = false;
+            submitButton.textContent = originalText;
+        }
+    });
+})();
 </script>
 {% endblock %}

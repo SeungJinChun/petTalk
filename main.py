@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import random
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from auth_context import resolve_auth_user
 from db_store import (
@@ -27,6 +27,7 @@ from db_store import (
     load_character_memory as db_load_character_memory,
     load_chat_history as db_load_chat_history,
     load_pet_history as db_load_pet_history,
+    load_sensor_link_target_by_device_id as db_load_sensor_link_target_by_device_id,
     load_pet_profile as db_load_pet_profile,
     load_recent_extractions as db_load_recent_extractions,
     load_user as db_load_user,
@@ -137,6 +138,21 @@ FIELD_LABELS = {
 
 def profile_store_key(owner_user_id: str, pet_id: str) -> str:
     return f"{owner_user_id}::{pet_id}"
+
+
+class SensorEnvironmentPayload(BaseModel):
+    device_id: str = Field(min_length=1, max_length=120)
+    temperature_c: float | None = Field(default=None, ge=0, le=50)
+    humidity_percent: float | None = Field(default=None, ge=0, le=100)
+    measured_at: datetime | None = None
+    sensor_device_name: str | None = None
+
+
+class SensorLinkPayload(BaseModel):
+    device_id: str = Field(min_length=1, max_length=120)
+    sensor_device_name: str | None = None
+    sensor_location_note: str | None = None
+    pet_name: str | None = None
 
 
 def clear_user_runtime_data(owner_user_id: str) -> None:
@@ -591,6 +607,109 @@ def get_or_create_pet_profile(pet_name: str, owner_user_id: str = "local-user") 
     return profile
 
 
+def get_or_create_pet_profile_by_id(
+    pet_id: str,
+    owner_user_id: str = "local-user",
+    pet_name_hint: str | None = None,
+) -> PetProfile:
+    normalized_pet_id = str(pet_id).strip()
+    if not normalized_pet_id:
+        raise ValueError("pet_id is required")
+
+    cache_key = profile_store_key(owner_user_id, normalized_pet_id)
+    profile = PET_STORE.get(cache_key)
+    if profile is not None:
+        return profile
+
+    db_payload = db_load_pet_profile(owner_user_id, normalized_pet_id)
+    if db_payload:
+        try:
+            profile = PetProfile.model_validate(db_payload)
+        except Exception:
+            logger.exception("Failed to validate pet profile for pet_id=%s", normalized_pet_id)
+            profile = None
+    else:
+        profile = None
+
+    if profile is None:
+        fallback_name = resolve_pet_name(pet_name_hint, fallback=normalized_pet_id)
+        profile = PetProfile(
+            pet_id=normalized_pet_id,
+            owner_user_id=owner_user_id,
+        )
+        profile.identity.name = CollectedField(
+            value=fallback_name,
+            confidence=ConfidenceLevel.LOW,
+            last_updated_at=utc_now(),
+        )
+
+    PET_STORE[cache_key] = profile
+    db_save_pet_profile(owner_user_id, normalized_pet_id, profile)
+    return profile
+
+
+def find_sensor_target_profile(
+    device_id: str,
+) -> tuple[str, PetProfile] | None:
+    normalized_device_id = str(device_id).strip()
+    if not normalized_device_id:
+        return None
+
+    for cache_key, profile in PET_STORE.items():
+        configured_device_id = str(collected_value(profile, "sensor_settings.sensor_device_id") or "").strip()
+        if not configured_device_id:
+            continue
+        if configured_device_id != normalized_device_id:
+            continue
+        owner_user_id, _, _ = cache_key.partition("::")
+        return owner_user_id or profile.owner_user_id, profile
+
+    row = db_load_sensor_link_target_by_device_id(normalized_device_id)
+    if not row:
+        return None
+
+    owner_user_id = str(row.get("owner_user_id") or "").strip()
+    pet_id = str(row.get("pet_id") or "").strip()
+    payload = row.get("data")
+    if not owner_user_id or not pet_id or not payload:
+        return None
+
+    try:
+        profile = PetProfile.model_validate(payload)
+    except Exception:
+        logger.exception("Failed to validate sensor-linked pet profile for pet_id=%s", pet_id)
+        return None
+
+    PET_STORE[profile_store_key(owner_user_id, pet_id)] = profile
+    return owner_user_id, profile
+
+
+def set_collected_field_value(profile: PetProfile, field_path: str, value: Any, confidence: ConfidenceLevel = ConfidenceLevel.HIGH) -> None:
+    parts = field_path.split(".")
+    cursor: Any = profile
+    for part in parts[:-1]:
+        if not hasattr(cursor, part):
+            return
+        cursor = getattr(cursor, part)
+    leaf = parts[-1]
+    if not hasattr(cursor, leaf):
+        return
+    current = getattr(cursor, leaf)
+    existing_evidence = current.evidence if isinstance(current, CollectedField) else []
+    setattr(
+        cursor,
+        leaf,
+        CollectedField(
+            value=value,
+            confidence=confidence,
+            last_updated_at=utc_now(),
+            needs_followup=False,
+            followup_question_hint=None,
+            evidence=existing_evidence,
+        ),
+    )
+
+
 def get_or_create_pet_history(pet_id: str, owner_user_id: str = "local-user") -> PetCareHistory:
     cache_key = profile_store_key(owner_user_id, pet_id)
     history = PET_HISTORY_STORE.get(cache_key)
@@ -873,6 +992,21 @@ def build_activity_feed(history: PetCareHistory) -> list[dict[str, str]]:
 
     feed.sort(key=lambda pair: pair[0], reverse=True)
     return [item for _, item in feed[:5]]
+
+
+def build_environment_chart_points(history: PetCareHistory, limit: int = 24) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for item in history.environment_readings:
+        if item.temperature_c is None and item.humidity_percent is None:
+            continue
+        points.append(
+            {
+                "label": item.measured_at.strftime("%m-%d %H:%M"),
+                "temperature": float(item.temperature_c) if item.temperature_c is not None else None,
+                "humidity": float(item.humidity_percent) if item.humidity_percent is not None else None,
+            }
+        )
+    return points[-limit:]
 
 
 def build_profile_lines(profile: PetProfile) -> list[str]:
@@ -2248,10 +2382,10 @@ def environment_alerts_for(
     if temperature_c is not None:
         if temperature_c >= 28:
             alerts.append(EnvironmentAlertType.OVERHEAT)
-        if temperature_c <= 18:
+        if temperature_c <= 16:
             alerts.append(EnvironmentAlertType.TOO_COLD)
     if humidity_percent is not None:
-        if humidity_percent < 50:
+        if humidity_percent < 45:
             alerts.append(EnvironmentAlertType.LOW_HUMIDITY)
         if humidity_percent > 90:
             alerts.append(EnvironmentAlertType.HIGH_HUMIDITY)
@@ -2942,6 +3076,10 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "tone": "sky",
         },
     ]
+    sensor_device_id = str(collected_value(profile, "sensor_settings.sensor_device_id") or "").strip()
+    sensor_device_name = str(collected_value(profile, "sensor_settings.sensor_device_name") or "").strip()
+    sensor_linked = bool(collected_value(profile, "sensor_settings.sensor_enabled")) and bool(sensor_device_id)
+    environment_chart_points = build_environment_chart_points(care_history, limit=24)
     return templates.TemplateResponse(
         request,
         "main_screen.html",
@@ -2971,6 +3109,11 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "chat_url": build_path("/chat", pet_name=resolved_name),
             "pet_url": build_path("/pet", pet_name=resolved_name),
             "records_url": build_path("/records", pet_name=resolved_name),
+            "sensor_link_api_url": "/api/sensor/link",
+            "sensor_linked": sensor_linked,
+            "sensor_device_id": sensor_device_id,
+            "sensor_device_name": sensor_device_name or sensor_device_id,
+            "environment_chart_points": environment_chart_points,
             "manifest_url": "/manifest.webmanifest",
             "sw_url": "/sw.js",
             "install_url": build_install_url(),
@@ -3173,6 +3316,127 @@ async def chat_api(request: Request) -> JSONResponse:
             "followup_plan": followup_plan,
             "periodic_analysis_notice": periodic_analysis_notice,
             "recent_extractions": serialize_extraction_results(profile.pet_id, current_user.user_id),
+        }
+    )
+
+
+@app.post("/api/sensor/link")
+async def sensor_link_api(request: Request) -> JSONResponse:
+    current_user = get_request_user(request)
+    try:
+        payload = SensorLinkPayload.model_validate(await request.json())
+    except ValidationError as exc:
+        return JSONResponse(
+            {"ok": False, "reason": "invalid_payload", "detail": exc.errors(include_url=False)},
+            status_code=422,
+        )
+
+    pet_name = resolve_pet_name_for_user(payload.pet_name, current_user)
+    profile = get_or_create_pet_profile(pet_name, owner_user_id=current_user.user_id)
+
+    sensor_name = str(payload.sensor_device_name or "").strip() or payload.device_id
+
+    set_collected_field_value(profile, "sensor_settings.sensor_enabled", True)
+    set_collected_field_value(profile, "sensor_settings.sensor_device_id", payload.device_id)
+    set_collected_field_value(profile, "sensor_settings.sensor_device_name", sensor_name)
+    if payload.sensor_location_note and payload.sensor_location_note.strip():
+        set_collected_field_value(
+            profile,
+            "sensor_settings.sensor_location_note",
+            payload.sensor_location_note.strip(),
+            confidence=ConfidenceLevel.MEDIUM,
+        )
+    profile.updated_at = utc_now()
+    db_save_pet_profile(current_user.user_id, profile.pet_id, profile)
+    PET_STORE[profile_store_key(current_user.user_id, profile.pet_id)] = profile
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "user_id": current_user.user_id,
+            "pet_id": profile.pet_id,
+            "pet_name": str(collected_value(profile, "identity.name") or profile.pet_id),
+            "device_id": payload.device_id,
+            "sensor_device_name": sensor_name,
+            "endpoint_url": "/api/sensor/environment",
+        }
+    )
+
+
+@app.post("/api/sensor/environment")
+async def sensor_environment_api(request: Request) -> JSONResponse:
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "reason": "invalid_json"}, status_code=400)
+
+    try:
+        payload = SensorEnvironmentPayload.model_validate(raw_payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "reason": "invalid_payload",
+                "detail": exc.errors(include_url=False),
+            },
+            status_code=422,
+        )
+
+    if payload.temperature_c is None and payload.humidity_percent is None:
+        return JSONResponse(
+            {"ok": False, "reason": "temperature_c or humidity_percent is required"},
+            status_code=400,
+        )
+
+    target = find_sensor_target_profile(payload.device_id)
+    if target is None:
+        return JSONResponse({"ok": False, "reason": "unlinked_device"}, status_code=401)
+    owner_user_id, profile = target
+
+    history = get_or_create_pet_history(profile.pet_id, owner_user_id=owner_user_id)
+
+    measured_at = payload.measured_at or utc_now()
+    if measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=timezone.utc)
+
+    resolved_sensor_name = str(
+        collected_value(profile, "sensor_settings.sensor_device_name")
+        or payload.sensor_device_name
+        or payload.device_id
+    ).strip()
+    reading = EnvironmentReading(
+        pet_id=profile.pet_id,
+        measured_at=measured_at,
+        temperature_c=payload.temperature_c,
+        humidity_percent=payload.humidity_percent,
+        sensor_device_name=resolved_sensor_name,
+    )
+    history.environment_readings.append(reading)
+    upsert_environment_daily_summary(history, measured_at.date())
+    sync_environment_snapshot(profile, history)
+    history.updated_at = utc_now()
+    profile.updated_at = utc_now()
+
+    PET_STORE[profile_store_key(owner_user_id, profile.pet_id)] = profile
+    PET_HISTORY_STORE[profile_store_key(owner_user_id, profile.pet_id)] = history
+    db_save_pet_profile(owner_user_id, profile.pet_id, profile)
+    db_save_pet_history(owner_user_id, profile.pet_id, history)
+
+    alerts = [
+        item.value
+        for item in environment_alerts_for(payload.temperature_c, payload.humidity_percent)
+    ]
+    return JSONResponse(
+        {
+            "ok": True,
+            "owner_user_id": owner_user_id,
+            "pet_id": profile.pet_id,
+            "pet_name": str(collected_value(profile, "identity.name") or profile.pet_id),
+            "device_id": payload.device_id,
+            "reading_id": reading.reading_id,
+            "measured_at": measured_at.isoformat(),
+            "alerts": alerts,
+            "history_counts": history_summary(history)["counts"],
         }
     )
 

@@ -161,6 +161,26 @@ def save_pet_profile(owner_user_id: str, pet_id: str, data: Any) -> None:
     )
 
 
+def load_sensor_link_target_by_device_id(device_id: str) -> dict[str, Any] | None:
+    row = fetch_one(
+        """
+        select owner_user_id, pet_id, data
+        from pet_profiles
+        where data #>> '{sensor_settings,sensor_enabled,value}' = 'true'
+          and data #>> '{sensor_settings,sensor_device_id,value}' = %s
+        limit 1
+        """,
+        (device_id,),
+    )
+    if not row:
+        return None
+    return {
+        "owner_user_id": row.get("owner_user_id"),
+        "pet_id": row.get("pet_id"),
+        "data": from_json(row.get("data")),
+    }
+
+
 def load_pet_history(owner_user_id: str, pet_id: str) -> dict[str, Any] | None:
     row = fetch_one(
         """

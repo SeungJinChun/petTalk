@@ -394,6 +394,7 @@ class CareRoutineProfile(BaseModel):
 
 class SensorSettingsProfile(BaseModel):
     sensor_enabled: CollectedField[bool] | None = None
+    sensor_device_id: CollectedField[str] | None = None
     sensor_device_name: CollectedField[str] | None = None
     sensor_location_note: CollectedField[str] | None = None
     reading_interval_seconds: CollectedField[int] | None = None
@@ -715,6 +716,7 @@ class RoutineProfilePatch(PatchBase):
 
 class SensorSettingsPatch(PatchBase):
     sensor_enabled: FieldPatch[bool] | None = None
+    sensor_device_id: FieldPatch[str] | None = None
     sensor_device_name: FieldPatch[str] | None = None
     sensor_location_note: FieldPatch[str] | None = None
     reading_interval_seconds: FieldPatch[int] | None = None

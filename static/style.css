@@ -1190,6 +1190,120 @@ main {
     opacity: 0.75;
 }
 
+.sensor-link-box {
+    display: grid;
+    gap: 10px;
+}
+
+.sensor-modal[hidden] {
+    display: none;
+}
+
+.sensor-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+}
+
+.sensor-modal__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(17, 14, 10, 0.5);
+}
+
+.sensor-modal__sheet {
+    position: absolute;
+    left: 50%;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    width: min(430px, calc(100% - 20px));
+    border: 1px solid #ebdfcf;
+    border-radius: 14px;
+    background: #fffdf9;
+    padding: 14px;
+    box-shadow: 0 20px 40px rgba(30, 24, 16, 0.22);
+    display: grid;
+    gap: 12px;
+}
+
+.sensor-link-form {
+    display: grid;
+    gap: 10px;
+}
+
+.sensor-link-form label {
+    display: grid;
+    gap: 6px;
+    font-size: 0.84rem;
+    color: #675a4b;
+}
+
+.sensor-link-form__checkbox {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+}
+
+.sensor-link-form__actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.sensor-link-result {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #eadfce;
+    background: #fdf8f1;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.env-chart-wrap {
+    display: grid;
+    gap: 10px;
+}
+
+.env-line-chart {
+    width: 100%;
+    height: 180px;
+    display: block;
+    border: 1px solid #ede2d4;
+    border-radius: 10px;
+    background: #fffdfa;
+}
+
+.env-chart-legend {
+    display: flex;
+    gap: 12px;
+    font-size: 0.78rem;
+    color: #7f7264;
+}
+
+.env-chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.env-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    display: inline-block;
+}
+
+.env-dot--temp {
+    background: #e56f3a;
+}
+
+.env-dot--humid {
+    background: #4d86d9;
+}
+
 @media (max-width: 640px) {
     .main-dashboard-page .page-shell {
         width: 100%;
