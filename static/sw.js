@@ -1,4 +1,4 @@
-const CACHE_NAME = "gecko-care-v3";
+const CACHE_NAME = "gecko-care-v4";
 const APP_SHELL = [
     "/",
     "/login",
@@ -37,6 +37,7 @@ self.addEventListener("fetch", (event) => {
     if (request.method !== "GET") {
         return;
     }
+    const url = new URL(request.url);
 
     if (request.mode === "navigate") {
         event.respondWith(
@@ -44,6 +45,25 @@ self.addEventListener("fetch", (event) => {
                 const cached = await caches.match(request, { ignoreSearch: true });
                 return cached || caches.match("/static/offline.html");
             }),
+        );
+        return;
+    }
+
+    // Keep critical static assets fresh when online.
+    if (url.origin === self.location.origin && url.pathname.startsWith("/static/")) {
+        event.respondWith(
+            fetch(request)
+                .then((response) => {
+                    if (response && response.status === 200 && response.type === "basic") {
+                        const responseClone = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
+                    }
+                    return response;
+                })
+                .catch(async () => {
+                    const cached = await caches.match(request, { ignoreSearch: true });
+                    return cached || Response.error();
+                }),
         );
         return;
     }
