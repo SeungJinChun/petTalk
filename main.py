@@ -109,6 +109,7 @@ AI_CHARACTER_STORE: dict[str, AICharacterMemory] = {}
 CARE_ANALYSIS_CACHE: dict[str, dict[str, Any]] = {}
 CARE_REPORT_CACHE: dict[str, dict[str, Any]] = {}
 CHAT_REPORT_PROMPT_STATE: dict[str, dict[str, Any]] = {}
+RISK_NOTIFICATION_INBOX: dict[str, dict[str, Any]] = {}
 RISK_ALERT_SAME_SIGNATURE_COOLDOWN = timedelta(hours=12)
 RISK_ALERT_LEVEL_COOLDOWN = {
     "alert": timedelta(hours=2),
@@ -210,6 +211,9 @@ def clear_user_runtime_data(owner_user_id: str) -> None:
     for key in list(CHAT_REPORT_PROMPT_STATE.keys()):
         if key.startswith(f"{owner_user_id}::"):
             CHAT_REPORT_PROMPT_STATE.pop(key, None)
+    for key in list(RISK_NOTIFICATION_INBOX.keys()):
+        if key.startswith(f"{owner_user_id}::"):
+            RISK_NOTIFICATION_INBOX.pop(key, None)
     for session_key in list(CHAT_STORE.keys()):
         if session_key.startswith(f"chat_history::{owner_user_id}::"):
             CHAT_STORE.pop(session_key, None)
@@ -1735,6 +1739,7 @@ async def maybe_emit_risk_alert(
     care_analysis: dict[str, Any] | None = None,
     *,
     send_push: bool = False,
+    queue_for_ui: bool = False,
 ) -> dict[str, Any] | None:
     if care_analysis is None:
         care_analysis = await get_hybrid_care_analysis(profile, history, owner_user_id)
@@ -1783,6 +1788,13 @@ async def maybe_emit_risk_alert(
         "body": report_prompt["body"],
         "chat_url": chat_url,
     }
+
+    if queue_for_ui:
+        inbox_key = profile_store_key(owner_user_id, profile.pet_id)
+        RISK_NOTIFICATION_INBOX[inbox_key] = {
+            **risk_notification,
+            "queued_at": utc_now().isoformat(),
+        }
 
     if send_push:
         user = get_or_create_user(owner_user_id)
@@ -3358,6 +3370,7 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "chat_url": build_path("/chat", pet_name=resolved_name),
             "pet_url": build_path("/pet", pet_name=resolved_name),
             "records_url": build_path("/records", pet_name=resolved_name),
+            "alert_test_api_url": build_path("/api/alerts/test", pet_name=resolved_name),
             "sensor_link_api_url": "/api/sensor/link",
             "sensor_linked": sensor_linked,
             "sensor_device_id": sensor_device_id,
@@ -3446,7 +3459,19 @@ async def main_data_api(request: Request, pet_name: str | None = None) -> JSONRe
         care_history,
         care_analysis=care_analysis,
         send_push=False,
+        queue_for_ui=False,
     )
+    if risk_notification is None:
+        inbox_key = profile_store_key(current_user.user_id, profile.pet_id)
+        queued = RISK_NOTIFICATION_INBOX.pop(inbox_key, None)
+        if queued:
+            risk_notification = {
+                "key": queued.get("key"),
+                "level": queued.get("level"),
+                "title": queued.get("title"),
+                "body": queued.get("body"),
+                "chat_url": queued.get("chat_url"),
+            }
 
     return JSONResponse(
         {
@@ -3465,6 +3490,69 @@ async def main_data_api(request: Request, pet_name: str | None = None) -> JSONRe
             "risk_notification": risk_notification,
             "chat_url": chat_url,
             "updated_at": utc_now().isoformat(),
+        }
+    )
+
+
+@app.post("/api/alerts/test")
+async def test_alert_api(request: Request, pet_name: str | None = None) -> JSONResponse:
+    current_user = get_request_user(request)
+    if not pet_name and not user_primary_pet_name(current_user):
+        return JSONResponse({"ok": False, "reason": "pet_name_required"}, status_code=400)
+
+    resolved_name = resolve_pet_name_for_user(pet_name, current_user)
+    profile = get_or_create_pet_profile(resolved_name, owner_user_id=current_user.user_id)
+    get_or_create_pet_history(profile.pet_id, owner_user_id=current_user.user_id)
+    chat_url = build_path("/chat", pet_name=resolved_name)
+    key = f"{profile.pet_id}:test:{int(utc_now().timestamp())}"
+
+    notice_text = f"테스트 알림이 도착했어. 눌러서 채팅으로 이동해도 돼. {chat_url}"
+    session_key = get_chat_session_key(resolved_name, current_user.user_id)
+    messages = CHAT_STORE.get(session_key) or db_load_chat_history(current_user.user_id, session_key)
+    if not messages:
+        messages = get_initial_chat_messages(resolved_name)
+
+    notice_message = ChatMessage(
+        message_id=str(uuid4()),
+        session_id=session_key,
+        pet_id=profile.pet_id,
+        role=MessageRole.AI,
+        text=notice_text,
+    )
+    CHAT_MESSAGE_STORE.setdefault(profile_store_key(current_user.user_id, profile.pet_id), []).append(notice_message)
+    db_append_chat_message(current_user.user_id, profile.pet_id, notice_message)
+    messages.append({"role": "ai", "text": notice_text})
+    CHAT_STORE[session_key] = messages
+    db_save_chat_history(current_user.user_id, profile.pet_id, session_key, messages)
+
+    risk_notification = {
+        "key": key,
+        "level": "watch",
+        "title": "테스트 알림",
+        "body": "알림 동작 확인용 메시지예요. 채팅으로 이동해볼까요?",
+        "chat_url": chat_url,
+    }
+    RISK_NOTIFICATION_INBOX[profile_store_key(current_user.user_id, profile.pet_id)] = {
+        **risk_notification,
+        "queued_at": utc_now().isoformat(),
+    }
+
+    push_result = send_web_push_notifications(
+        current_user,
+        {
+            "title": risk_notification["title"],
+            "body": risk_notification["body"],
+            "url": chat_url,
+            "tag": key,
+        },
+    )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "risk_notification": risk_notification,
+            "push_attempted": push_result.get("attempted", 0),
+            "push_sent": push_result.get("sent", 0),
         }
     )
 
@@ -3778,6 +3866,7 @@ async def sensor_environment_api(request: Request) -> JSONResponse:
         history,
         care_analysis=None,
         send_push=True,
+        queue_for_ui=True,
     )
 
     alerts = [

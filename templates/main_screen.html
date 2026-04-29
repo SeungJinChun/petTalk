@@ -44,6 +44,14 @@
             <span>분석 확인</span>
         </div>
         <a class="care-report-link" href="{{ report_url }}">보고서 보기</a>
+        <button
+            id="alert-test-button"
+            class="secondary-btn"
+            type="button"
+            data-test-url="{{ alert_test_api_url }}"
+        >
+            알림 테스트
+        </button>
     </section>
 
     <section class="dashboard-card">
@@ -219,6 +227,7 @@
     const overviewText = document.getElementById("overview-text");
     const overviewBadge = document.getElementById("overview-badge");
     const quickStatsGrid = document.getElementById("quick-stats-grid");
+    const alertTestButton = document.getElementById("alert-test-button");
     const RISK_LAST_KEY_STORAGE = "risk_notification_last_key";
     const RISK_LAST_AT_STORAGE = "risk_notification_last_at";
     const RISK_CLIENT_MIN_INTERVAL_MS = 10 * 60 * 1000;
@@ -409,6 +418,31 @@
         if (window.confirm(`${title}\n\n${body}\n\n채팅으로 이동할까요?`)) goChat();
     };
 
+    if (alertTestButton) {
+        alertTestButton.addEventListener("click", async () => {
+            const original = alertTestButton.textContent;
+            alertTestButton.disabled = true;
+            alertTestButton.textContent = "테스트 중...";
+            try {
+                const response = await fetch(alertTestButton.dataset.testUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                });
+                const payload = await response.json();
+                if (!response.ok || !payload?.ok) {
+                    throw new Error(payload?.reason || `status_${response.status}`);
+                }
+                maybeShowRiskNotification({ risk_notification: payload.risk_notification });
+            } catch (error) {
+                console.warn("alert test failed:", error);
+                window.alert("테스트 알림 전송에 실패했어요. 잠시 후 다시 시도해 주세요.");
+            } finally {
+                alertTestButton.disabled = false;
+                alertTestButton.textContent = original;
+            }
+        });
+    }
+
     async function load() {
         showLoading();
         try {
@@ -419,6 +453,8 @@
             if (!data || data.ok === false) return;
             updateUI(data);
             maybeShowRiskNotification(data);
+        } catch (error) {
+            console.warn("main poll failed:", error);
         } finally {
             hideLoading();
         }

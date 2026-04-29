@@ -1,4 +1,4 @@
-const CACHE_NAME = "gecko-care-v5";
+const CACHE_NAME = "gecko-care-v6";
 const APP_SHELL = [
     "/",
     "/login",
@@ -38,6 +38,12 @@ self.addEventListener("fetch", (event) => {
         return;
     }
     const url = new URL(request.url);
+
+    // API responses must stay real-time and should not be served from cache.
+    if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+        event.respondWith(fetch(request));
+        return;
+    }
 
     if (request.mode === "navigate") {
         event.respondWith(
