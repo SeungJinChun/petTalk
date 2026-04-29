@@ -109,6 +109,14 @@
       }
     }
 
+    (async () => {
+      const { data } = await client.auth.getSession();
+      if (data?.session?.access_token) {
+        await saveSession(data.session);
+        location.href = NEXT_URL || "/main";
+      }
+    })();
+
     document.getElementById("signin").onclick = async () => {
       msg.textContent = "로그인 중...";
       const email = document.getElementById("email").value;
@@ -126,8 +134,15 @@
       msg.textContent = "회원가입 중...";
       const email = document.getElementById("email").value;
       const password = document.getElementById("password").value;
+      const emailRedirectTo = `${location.origin}/login?next_url=${encodeURIComponent(NEXT_URL || "/main")}`;
 
-      const { data, error } = await client.auth.signUp({ email, password });
+      const { data, error } = await client.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo,
+        },
+      });
 
       if (error) return msg.textContent = error.message;
 
