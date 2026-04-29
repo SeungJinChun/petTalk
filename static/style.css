@@ -561,6 +561,11 @@ main {
     gap: 12px;
 }
 
+.mobile-dashboard.is-syncing {
+    opacity: 0.92;
+    transition: opacity 0.2s ease;
+}
+
 .mobile-dashboard__topbar,
 .mobile-dashboard__hero,
 .dashboard-card__header,

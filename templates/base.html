@@ -47,11 +47,68 @@
             const swUrl = document.body.dataset.swUrl || "/sw.js";
             const installButton = document.getElementById("pwa-install-button");
             let deferredInstallPrompt = null;
+            const PUSH_PROMPTED_KEY = "push_permission_prompted_v1";
 
             const isStandalone = () => {
                 const mediaStandalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
                 const iosStandalone = typeof navigator.standalone === "boolean" && navigator.standalone;
                 return mediaStandalone || iosStandalone;
+            };
+            const canUseWebPush = () =>
+                "PushManager" in window &&
+                "Notification" in window &&
+                location.protocol === "https:";
+
+            const urlBase64ToUint8Array = (base64String) => {
+                const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+                const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+                const rawData = atob(base64);
+                const outputArray = new Uint8Array(rawData.length);
+                for (let i = 0; i < rawData.length; i += 1) {
+                    outputArray[i] = rawData.charCodeAt(i);
+                }
+                return outputArray;
+            };
+
+            const maybeAskPushPermission = async () => {
+                if (!canUseWebPush()) return "unsupported";
+                if (Notification.permission !== "default") return Notification.permission;
+                if (location.pathname !== "/main") return "default";
+                if (localStorage.getItem(PUSH_PROMPTED_KEY) === "1") return "default";
+                localStorage.setItem(PUSH_PROMPTED_KEY, "1");
+
+                const allowed = window.confirm(
+                    "앱이 닫혀 있어도 위험 상태 알림을 받으려면 알림 권한이 필요해요. 지금 허용할까요?",
+                );
+                if (!allowed) return "default";
+                return Notification.requestPermission();
+            };
+
+            const registerPushSubscription = async (registration) => {
+                if (location.pathname !== "/main") return;
+                if (!canUseWebPush()) return;
+                const keyResponse = await fetch("/api/push/public-key", { cache: "no-store" });
+                if (!keyResponse.ok) return;
+                const keyPayload = await keyResponse.json();
+                if (!keyPayload || !keyPayload.ok || !keyPayload.public_key) return;
+
+                const permission = await maybeAskPushPermission();
+                if (permission !== "granted") return;
+
+                let subscription = await registration.pushManager.getSubscription();
+                if (!subscription) {
+                    subscription = await registration.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: urlBase64ToUint8Array(keyPayload.public_key),
+                    });
+                }
+                if (!subscription) return;
+
+                await fetch("/api/push/subscribe", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(subscription.toJSON()),
+                });
             };
 
             const hideInstallButton = () => {
@@ -68,7 +125,10 @@
 
             if ("serviceWorker" in navigator) {
                 window.addEventListener("load", () => {
-                    navigator.serviceWorker.register(swUrl).catch(() => {});
+                    navigator.serviceWorker
+                        .register(swUrl)
+                        .then((registration) => registerPushSubscription(registration).catch(() => {}))
+                        .catch(() => {});
                 });
             }
 

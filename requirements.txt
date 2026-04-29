@@ -5,3 +5,5 @@ jinja2
 openai
 pydantic
 psycopg[binary]
+pywebpush
+py-vapid

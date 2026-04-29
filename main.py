@@ -67,6 +67,8 @@ from schemas import (
     SymptomSeverity,
     TrendDirection,
     UserAccount,
+    WebPushSubscription,
+    WebPushSubscriptionKeys,
     WeightLog,
     WeightTrendSnapshot,
     utc_now,
@@ -88,6 +90,9 @@ if BLUEPRINT_PATCH_FIELD_ERRORS:
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 REPLY_MODEL = os.environ.get("OPENAI_REPLY_MODEL", "gpt-4o-mini")
 EXTRACTION_MODEL = os.environ.get("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")
+WEB_PUSH_PUBLIC_KEY = os.environ.get("WEB_PUSH_PUBLIC_KEY", "").strip()
+WEB_PUSH_PRIVATE_KEY = os.environ.get("WEB_PUSH_PRIVATE_KEY", "").strip()
+WEB_PUSH_SUBJECT = os.environ.get("WEB_PUSH_SUBJECT", "mailto:admin@example.com").strip()
 
 app = FastAPI(title="Crested Gecko Care")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -104,6 +109,16 @@ AI_CHARACTER_STORE: dict[str, AICharacterMemory] = {}
 CARE_ANALYSIS_CACHE: dict[str, dict[str, Any]] = {}
 CARE_REPORT_CACHE: dict[str, dict[str, Any]] = {}
 CHAT_REPORT_PROMPT_STATE: dict[str, dict[str, Any]] = {}
+RISK_ALERT_SAME_SIGNATURE_COOLDOWN = timedelta(hours=12)
+RISK_ALERT_LEVEL_COOLDOWN = {
+    "alert": timedelta(hours=2),
+    "watch": timedelta(hours=6),
+}
+RISK_ALERT_DAILY_CAP = {
+    "alert": 4,
+    "watch": 2,
+}
+RISK_ALERT_MIN_INTERVAL = timedelta(minutes=20)
 
 TOPIC_LABELS = {
     "identity": "기본 정보",
@@ -153,6 +168,21 @@ class SensorLinkPayload(BaseModel):
     sensor_device_name: str | None = None
     sensor_location_note: str | None = None
     pet_name: str | None = None
+
+
+class PushSubscriptionKeysPayload(BaseModel):
+    p256dh: str = Field(min_length=1)
+    auth: str = Field(min_length=1)
+
+
+class PushSubscriptionPayload(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=2000)
+    keys: PushSubscriptionKeysPayload
+    expirationTime: int | None = None
+
+
+class PushUnsubscribePayload(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=2000)
 
 
 def clear_user_runtime_data(owner_user_id: str) -> None:
@@ -536,6 +566,117 @@ def build_path(path: str, **params: str | None) -> str:
 
 def build_install_url() -> str:
     return "/main"
+
+
+def web_push_enabled() -> bool:
+    return bool(WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY and WEB_PUSH_SUBJECT)
+
+
+def upsert_push_subscription(
+    user: UserAccount,
+    payload: PushSubscriptionPayload,
+    user_agent: str | None = None,
+) -> None:
+    now = utc_now()
+    subscriptions = list(user.preferences.push_subscriptions or [])
+    updated: list[WebPushSubscription] = []
+    replaced = False
+
+    for item in subscriptions:
+        if item.endpoint == payload.endpoint:
+            updated.append(
+                WebPushSubscription(
+                    endpoint=payload.endpoint,
+                    keys=WebPushSubscriptionKeys(
+                        p256dh=payload.keys.p256dh,
+                        auth=payload.keys.auth,
+                    ),
+                    expirationTime=payload.expirationTime,
+                    user_agent=user_agent or item.user_agent,
+                    created_at=item.created_at,
+                    updated_at=now,
+                )
+            )
+            replaced = True
+        else:
+            updated.append(item)
+
+    if not replaced:
+        updated.append(
+            WebPushSubscription(
+                endpoint=payload.endpoint,
+                keys=WebPushSubscriptionKeys(
+                    p256dh=payload.keys.p256dh,
+                    auth=payload.keys.auth,
+                ),
+                expirationTime=payload.expirationTime,
+                user_agent=user_agent,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    user.preferences.push_subscriptions = updated[-5:]
+    USER_STORE[user.user_id] = user
+    db_save_user(user.user_id, user.email, user)
+
+
+def remove_push_subscription(user: UserAccount, endpoint: str) -> bool:
+    subscriptions = list(user.preferences.push_subscriptions or [])
+    filtered = [item for item in subscriptions if item.endpoint != endpoint]
+    changed = len(filtered) != len(subscriptions)
+    if changed:
+        user.preferences.push_subscriptions = filtered
+        USER_STORE[user.user_id] = user
+        db_save_user(user.user_id, user.email, user)
+    return changed
+
+
+def send_web_push_notifications(user: UserAccount, payload: dict[str, Any]) -> dict[str, int]:
+    subscriptions = list(user.preferences.push_subscriptions or [])
+    if not subscriptions:
+        return {"attempted": 0, "sent": 0}
+    if not web_push_enabled():
+        return {"attempted": len(subscriptions), "sent": 0}
+
+    try:
+        from pywebpush import WebPushException, webpush
+    except Exception:
+        logger.warning("pywebpush is not installed; push notifications are disabled.")
+        return {"attempted": len(subscriptions), "sent": 0}
+
+    sent = 0
+    stale_endpoints: list[str] = []
+    data = json.dumps(payload, ensure_ascii=False)
+    for sub in subscriptions:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub.endpoint,
+                    "keys": {
+                        "p256dh": sub.keys.p256dh,
+                        "auth": sub.keys.auth,
+                    },
+                },
+                data=data,
+                vapid_private_key=WEB_PUSH_PRIVATE_KEY,
+                vapid_claims={"sub": WEB_PUSH_SUBJECT},
+                ttl=120,
+            )
+            sent += 1
+        except WebPushException as exc:
+            status_code = None
+            if getattr(exc, "response", None) is not None:
+                status_code = getattr(exc.response, "status_code", None)
+            if status_code in {404, 410}:
+                stale_endpoints.append(sub.endpoint)
+            logger.info("Web push delivery failed for user=%s status=%s", user.user_id, status_code)
+        except Exception:
+            logger.exception("Unexpected web push failure for user=%s", user.user_id)
+
+    for endpoint in stale_endpoints:
+        remove_push_subscription(user, endpoint)
+    return {"attempted": len(subscriptions), "sent": sent}
 
 
 def get_chat_session_key(pet_name: str, owner_user_id: str = "local-user") -> str:
@@ -1512,29 +1653,63 @@ def get_chat_report_prompt(
     care_analysis: dict[str, Any],
     history: PetCareHistory,
 ) -> dict[str, str] | None:
+    def _level_rank(value: str) -> int:
+        return {"stable": 0, "watch": 1, "alert": 2}.get(value, 0)
+
+    def _risk_signature() -> str:
+        level_text = str(care_analysis.get("overall_level", "stable")).strip().lower()
+        signals: list[str] = []
+        for signal in care_analysis.get("rule_signals", []):
+            if isinstance(signal, dict):
+                area = str(signal.get("area", "")).strip().lower()
+                level = str(signal.get("level", "")).strip().lower()
+                reason = str(signal.get("reason", "")).strip().lower()[:80]
+                signals.append(f"{area}:{level}:{reason}")
+            else:
+                signals.append(str(signal).strip().lower()[:80])
+        signals = sorted(item for item in signals if item)
+        return f"{level_text}::{'|'.join(signals[:8]) if signals else 'no-signal'}"
+
     level = str(care_analysis.get("overall_level", "stable"))
     if level not in {"watch", "alert"}:
         return None
 
     key = profile_store_key(owner_user_id, pet_id)
-    signature = f"{care_analysis_signature(history)}::{level}"
+    signature = _risk_signature()
     now = utc_now()
-    cooldown = timedelta(hours=6)
     previous = CHAT_REPORT_PROMPT_STATE.get(key)
+    today = now.date()
+
+    daily_count = 0
+    if previous and previous.get("day") == today:
+        daily_count = int(previous.get("daily_count") or 0)
+
+    if daily_count >= int(RISK_ALERT_DAILY_CAP.get(level, 2)):
+        return None
 
     if previous:
-        shown_at = previous.get("shown_at")
-        previous_signature = previous.get("signature")
-        if (
-            isinstance(shown_at, datetime)
-            and previous_signature == signature
-            and now - shown_at < cooldown
-        ):
-            return None
+        last_sent_at = previous.get("shown_at")
+        previous_signature = str(previous.get("signature") or "")
+        previous_level = str(previous.get("level") or "stable")
+        if isinstance(last_sent_at, datetime):
+            if now - last_sent_at < RISK_ALERT_MIN_INTERVAL:
+                return None
+            if (
+                previous_signature == signature
+                and now - last_sent_at < RISK_ALERT_SAME_SIGNATURE_COOLDOWN
+            ):
+                return None
+            if _level_rank(level) <= _level_rank(previous_level):
+                cooldown = RISK_ALERT_LEVEL_COOLDOWN.get(level, timedelta(hours=6))
+                if now - last_sent_at < cooldown:
+                    return None
 
     CHAT_REPORT_PROMPT_STATE[key] = {
         "signature": signature,
         "shown_at": now,
+        "level": level,
+        "day": today,
+        "daily_count": daily_count + 1,
     }
 
     if level == "alert":
@@ -1548,7 +1723,80 @@ def get_chat_report_prompt(
         "level": level,
         "title": title,
         "body": body,
+        "signature": signature,
     }
+
+
+async def maybe_emit_risk_alert(
+    owner_user_id: str,
+    pet_name: str,
+    profile: PetProfile,
+    history: PetCareHistory,
+    care_analysis: dict[str, Any] | None = None,
+    *,
+    send_push: bool = False,
+) -> dict[str, Any] | None:
+    if care_analysis is None:
+        care_analysis = await get_hybrid_care_analysis(profile, history, owner_user_id)
+
+    report_prompt = get_chat_report_prompt(
+        owner_user_id,
+        profile.pet_id,
+        care_analysis,
+        history,
+    )
+    if report_prompt is None:
+        return None
+
+    resolved_name = resolve_pet_name(pet_name, fallback=profile.pet_id)
+    chat_url = build_path("/chat", pet_name=resolved_name)
+    session_key = get_chat_session_key(resolved_name, owner_user_id)
+    messages = CHAT_STORE.get(session_key) or db_load_chat_history(owner_user_id, session_key)
+    if not messages:
+        messages = get_initial_chat_messages(resolved_name)
+
+    ai_summary = str(care_analysis.get("ai_summary") or "").strip()
+    natural_notice = (
+        f"{report_prompt['title']} {ai_summary}"
+        if ai_summary
+        else "지금 상태 흐름에서 조금 신경 쓰이는 점이 보여. 채팅에서 같이 정리해보자."
+    )
+    notice_text = f"{natural_notice} {chat_url}"
+
+    notice_message = ChatMessage(
+        message_id=str(uuid4()),
+        session_id=session_key,
+        pet_id=profile.pet_id,
+        role=MessageRole.AI,
+        text=notice_text,
+    )
+    CHAT_MESSAGE_STORE.setdefault(profile_store_key(owner_user_id, profile.pet_id), []).append(notice_message)
+    db_append_chat_message(owner_user_id, profile.pet_id, notice_message)
+    messages.append({"role": "ai", "text": notice_text})
+    CHAT_STORE[session_key] = messages
+    db_save_chat_history(owner_user_id, profile.pet_id, session_key, messages)
+
+    risk_notification = {
+        "key": f"{profile.pet_id}:{report_prompt.get('signature', care_analysis.get('overall_level', 'watch'))}",
+        "level": report_prompt["level"],
+        "title": report_prompt["title"],
+        "body": report_prompt["body"],
+        "chat_url": chat_url,
+    }
+
+    if send_push:
+        user = get_or_create_user(owner_user_id)
+        push_payload = {
+            "title": report_prompt["title"],
+            "body": report_prompt["body"],
+            "url": chat_url,
+            "tag": risk_notification["key"],
+        }
+        push_result = send_web_push_notifications(user, push_payload)
+        risk_notification["push_attempted"] = push_result.get("attempted", 0)
+        risk_notification["push_sent"] = push_result.get("sent", 0)
+
+    return risk_notification
 
 
 
@@ -3105,6 +3353,7 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
                 + len(care_history.environment_readings)
             ),
             "main_url": build_path("/main", pet_name=resolved_name),
+            "main_data_api_url": build_path("/api/data", pet_name=resolved_name),
             "report_url": build_path("/care-report", pet_name=resolved_name),
             "chat_url": build_path("/chat", pet_name=resolved_name),
             "pet_url": build_path("/pet", pet_name=resolved_name),
@@ -3118,6 +3367,105 @@ async def main_screen(request: Request, pet_name: str | None = None) -> HTMLResp
             "sw_url": "/sw.js",
             "install_url": build_install_url(),
         },
+    )
+
+
+@app.get("/api/data")
+async def main_data_api(request: Request, pet_name: str | None = None) -> JSONResponse:
+    current_user = get_request_user(request)
+    if not pet_name and not user_primary_pet_name(current_user):
+        return JSONResponse({"ok": False, "reason": "pet_name_required"}, status_code=400)
+
+    resolved_name = resolve_pet_name_for_user(pet_name, current_user)
+    profile = get_or_create_pet_profile(resolved_name, owner_user_id=current_user.user_id)
+    care_history = get_or_create_pet_history(profile.pet_id, owner_user_id=current_user.user_id)
+    care_analysis = await get_hybrid_care_analysis(profile, care_history, current_user.user_id)
+    chat_url = build_path("/chat", pet_name=resolved_name)
+    summary = profile_summary(profile)
+    collected_sections = [key for key in summary.keys() if key not in {"pet_id", "species"}]
+    latest_environment = care_history.environment_readings[-1] if care_history.environment_readings else None
+    current_weight = collected_value(profile, "weight.current_weight_grams")
+    day_temperature = collected_value(profile, "habitat.day_temperature_c")
+    day_humidity = collected_value(profile, "habitat.day_humidity_percent")
+    next_topic = topic_label(profile.coverage.next_best_question_topic)
+
+    overview_text = (
+        f"지금까지 {len(collected_sections)}개 영역이 채워졌고, 다음 추천 체크 주제는 {next_topic}입니다."
+        if collected_sections
+        else f"{resolved_name}의 프로필을 막 모으기 시작했어요. 오늘 두세 가지 정보만 더 모아도 충분해요."
+    )
+
+    environment_value = "미입력"
+    environment_note = "최근 환경 기록 없음"
+    if latest_environment and (
+        latest_environment.temperature_c is not None or latest_environment.humidity_percent is not None
+    ):
+        temp_text = (
+            f"{latest_environment.temperature_c:.1f}°C"
+            if latest_environment.temperature_c is not None
+            else "-"
+        )
+        humidity_text = (
+            f"{latest_environment.humidity_percent:.0f}%"
+            if latest_environment.humidity_percent is not None
+            else "-"
+        )
+        environment_value = f"{temp_text} / {humidity_text}"
+        environment_note = f"최근 측정 {format_timestamp_label(latest_environment.measured_at)}"
+    elif day_temperature is not None or day_humidity is not None:
+        temp_text = f"{day_temperature}°C" if day_temperature is not None else "-"
+        humidity_text = f"{day_humidity}%" if day_humidity is not None else "-"
+        environment_value = f"{temp_text} / {humidity_text}"
+        environment_note = "프로필 기준 환경값"
+
+    quick_stats = [
+        {
+            "label": "채워진 영역",
+            "value": str(len(collected_sections)),
+            "note": f"전체 프로필 기준 / 다음 {next_topic}",
+            "tone": "mint",
+        },
+        {
+            "label": "현재 체중",
+            "value": f"{current_weight}g" if current_weight is not None else "미입력",
+            "note": "최근 체중 로그 또는 프로필 값",
+            "tone": "peach",
+        },
+        {
+            "label": "온도 / 습도",
+            "value": environment_value,
+            "note": environment_note,
+            "tone": "sky",
+        },
+    ]
+
+    risk_notification = await maybe_emit_risk_alert(
+        current_user.user_id,
+        resolved_name,
+        profile,
+        care_history,
+        care_analysis=care_analysis,
+        send_push=False,
+    )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "pet_name": resolved_name,
+            "overview_text": overview_text,
+            "overview_badge": "실시간",
+            "record_count": (
+                len(care_history.care_events)
+                + len(care_history.feeding_logs)
+                + len(care_history.weight_logs)
+                + len(care_history.environment_readings)
+            ),
+            "quick_stats": quick_stats,
+            "environment_chart_points": build_environment_chart_points(care_history, limit=24),
+            "risk_notification": risk_notification,
+            "chat_url": chat_url,
+            "updated_at": utc_now().isoformat(),
+        }
     )
 
 
@@ -3422,6 +3770,16 @@ async def sensor_environment_api(request: Request) -> JSONResponse:
     db_save_pet_profile(owner_user_id, profile.pet_id, profile)
     db_save_pet_history(owner_user_id, profile.pet_id, history)
 
+    pet_display_name = str(collected_value(profile, "identity.name") or profile.pet_id)
+    risk_notification = await maybe_emit_risk_alert(
+        owner_user_id,
+        pet_display_name,
+        profile,
+        history,
+        care_analysis=None,
+        send_push=True,
+    )
+
     alerts = [
         item.value
         for item in environment_alerts_for(payload.temperature_c, payload.humidity_percent)
@@ -3436,6 +3794,7 @@ async def sensor_environment_api(request: Request) -> JSONResponse:
             "reading_id": reading.reading_id,
             "measured_at": measured_at.isoformat(),
             "alerts": alerts,
+            "risk_notification": risk_notification,
             "history_counts": history_summary(history)["counts"],
         }
     )
@@ -3490,6 +3849,83 @@ async def auth_me(request: Request) -> JSONResponse:
             "auth_provider": auth_user.get("auth_provider"),
             "authenticated": auth_user.get("authenticated", False),
             "verified": auth_user.get("verified", False),
+        }
+    )
+
+
+@app.get("/api/push/public-key")
+async def push_public_key_api(request: Request) -> JSONResponse:
+    get_request_user(request)
+    return JSONResponse(
+        {
+            "ok": web_push_enabled(),
+            "public_key": WEB_PUSH_PUBLIC_KEY if web_push_enabled() else None,
+        }
+    )
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe_api(request: Request) -> JSONResponse:
+    current_user = get_request_user(request)
+    if not web_push_enabled():
+        return JSONResponse({"ok": False, "reason": "push_not_configured"}, status_code=503)
+
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "reason": "invalid_json"}, status_code=400)
+
+    try:
+        payload = PushSubscriptionPayload.model_validate(raw_payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "reason": "invalid_payload",
+                "detail": exc.errors(include_url=False),
+            },
+            status_code=422,
+        )
+
+    upsert_push_subscription(
+        current_user,
+        payload,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "subscription_count": len(current_user.preferences.push_subscriptions),
+        }
+    )
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe_api(request: Request) -> JSONResponse:
+    current_user = get_request_user(request)
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "reason": "invalid_json"}, status_code=400)
+
+    try:
+        payload = PushUnsubscribePayload.model_validate(raw_payload)
+    except ValidationError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "reason": "invalid_payload",
+                "detail": exc.errors(include_url=False),
+            },
+            status_code=422,
+        )
+
+    removed = remove_push_subscription(current_user, payload.endpoint)
+    return JSONResponse(
+        {
+            "ok": True,
+            "removed": removed,
+            "subscription_count": len(current_user.preferences.push_subscriptions),
         }
     )
 

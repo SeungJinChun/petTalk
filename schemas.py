@@ -405,6 +405,20 @@ class SensorSettingsProfile(BaseModel):
     alert_channels: CollectedField[list[AlertChannel]] | None = None
 
 
+class WebPushSubscriptionKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class WebPushSubscription(BaseModel):
+    endpoint: str
+    keys: WebPushSubscriptionKeys
+    expirationTime: int | None = None
+    user_agent: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class UserPreferenceProfile(BaseModel):
     primary_pet_name: CollectedField[str] | None = None
     guardian_name: CollectedField[str] | None = None
@@ -412,6 +426,7 @@ class UserPreferenceProfile(BaseModel):
     explanation_depth_preference: CollectedField[str] | None = None
     alert_tolerance_note: CollectedField[str] | None = None
     preferred_checkin_style: CollectedField[str] | None = None
+    push_subscriptions: list[WebPushSubscription] = Field(default_factory=list)
 
 
 class ProfileCoverage(BaseModel):

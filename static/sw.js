@@ -1,4 +1,4 @@
-const CACHE_NAME = "gecko-care-v4";
+const CACHE_NAME = "gecko-care-v5";
 const APP_SHELL = [
     "/",
     "/login",
@@ -85,6 +85,46 @@ self.addEventListener("fetch", (event) => {
                     return response;
                 })
                 .catch(() => Response.error());
+        }),
+    );
+});
+
+self.addEventListener("push", (event) => {
+    let payload = {};
+    try {
+        payload = event.data ? event.data.json() : {};
+    } catch (error) {
+        payload = { title: "케어 알림", body: "확인이 필요한 상태가 있어요.", url: "/chat" };
+    }
+
+    const title = payload.title || "케어 알림";
+    const options = {
+        body: payload.body || "확인이 필요한 상태가 있어요.",
+        icon: "/static/icons/icon-192.png",
+        badge: "/static/icons/icon-192.png",
+        tag: payload.tag || "care-risk",
+        data: {
+            url: payload.url || "/chat",
+        },
+    };
+    event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+    event.notification.close();
+    const targetUrl = event.notification?.data?.url || "/chat";
+
+    event.waitUntil(
+        clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
+            for (const client of windowClients) {
+                if ("focus" in client) {
+                    if ("navigate" in client) {
+                        client.navigate(targetUrl);
+                    }
+                    return client.focus();
+                }
+            }
+            return clients.openWindow(targetUrl);
         }),
     );
 });
